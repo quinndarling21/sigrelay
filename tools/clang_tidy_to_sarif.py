@@ -2,19 +2,24 @@
 """Convert clang-tidy console output to SARIF 2.1.0.
 
 Usage: clang_tidy_to_sarif.py CLANG_TIDY_LOG OUTPUT_SARIF [--root DIR] [--tool-version V]
+                              [--github-annotations]
 
 Each "file:line:col: warning|error: message [check]" diagnostic becomes one
 SARIF result whose ruleId is the check name. "Error while processing FILE"
 lines (clang-tidy could not analyse a file) are reported under the rule
 clang-tidy-processing-error. Notes are left in the raw log.
 
-Prints every finding and exits 1 if there is at least one, 0 otherwise.
+Prints every finding and exits 1 if there is at least one, 0 otherwise. In
+GitHub Actions (or with --github-annotations) each finding is also printed as
+an error annotation and listed in the step summary; see github_annotations.py.
 """
 import argparse
 import json
 import os
 import re
 import sys
+
+import github_annotations
 
 DIAGNOSTIC = re.compile(
     r"^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?P<column>\d+): "
@@ -120,6 +125,8 @@ def main(argv):
     parser.add_argument("output")
     parser.add_argument("--root", default=os.getcwd())
     parser.add_argument("--tool-version", default="")
+    parser.add_argument("--github-annotations", action="store_true",
+                        help="print GitHub error annotations (default when GITHUB_ACTIONS=true)")
     args = parser.parse_args(argv)
 
     root = os.path.abspath(args.root)
@@ -132,6 +139,12 @@ def main(argv):
     for result in results:
         print(describe(result))
     print("clang-tidy: %d finding(s), SARIF written to %s" % (len(results), args.output))
+    if github_annotations.enabled(args.github_annotations):
+        items = github_annotations.sarif_items(results, root)
+        github_annotations.print_annotations("clang-tidy", items, args.output)
+        github_annotations.append_summary(
+            "clang-tidy: %d finding(s)" % len(items) if items else "clang-tidy: no findings",
+            "Rule", items)
     return 1 if results else 0
 
 

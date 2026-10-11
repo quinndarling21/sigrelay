@@ -40,6 +40,15 @@ jobs:
           ctest --test-dir build -LE quarantine --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/ctest-junit.xml"
 
+      # One error annotation per failing test, at the assertion's file:line,
+      # plus a step summary table. GitHub displays at most 10 error annotations
+      # per step and 50 per job; the ctest-junit artifact and the step summary
+      # hold the complete list. Without a report (the build failed) this only
+      # notes that ctest did not run.
+      - name: Annotate test failures
+        if: always()
+        run: python3 tools/junit_to_annotations.py ctest-junit.xml --github-annotations
+
       - name: Upload JUnit results
         if: always()
         uses: actions/upload-artifact@v7
@@ -63,7 +72,10 @@ jobs:
       # runner and the agent environment in .cursor/environment.json) ships
       # 2.13 without it. CI keeps the apt build so findings reproduce exactly
       # where agents triage them, writes cppcheck's XML report, and converts it
-      # with tools/cppcheck_xml_to_sarif.py.
+      # with tools/cppcheck_xml_to_sarif.py. The converter also prints one error
+      # annotation per finding and a step summary table. GitHub displays at
+      # most 10 error annotations per step and 50 per job; the cppcheck-sarif
+      # artifact and the step summary hold the complete list.
       - name: Run cppcheck
         run: |
           status=0
@@ -72,7 +84,8 @@ jobs:
             --inline-suppr --error-exitcode=1 \
             --xml --output-file=cppcheck.xml \
             src include || status=$?
-          python3 tools/cppcheck_xml_to_sarif.py cppcheck.xml cppcheck.sarif || status=1
+          python3 tools/cppcheck_xml_to_sarif.py cppcheck.xml cppcheck.sarif \
+            --github-annotations || status=1
           if [ "$status" -ne 0 ]; then
             echo "::error title=cppcheck::cppcheck reported findings (listed above); fix them or add a justified inline suppression"
             exit 1
@@ -101,6 +114,10 @@ jobs:
         run: cmake -S . -B build -DCMAKE_C_COMPILER=clang -DSIGRELAY_BUILD_TESTS=OFF
 
       # Checks come from .clang-tidy, which treats every finding as an error.
+      # The converter also prints one error annotation per finding and a step
+      # summary table. GitHub displays at most 10 error annotations per step
+      # and 50 per job; the clang-tidy-sarif artifact and the step summary hold
+      # the complete list.
       - name: Run clang-tidy
         run: |
           status=0
@@ -108,7 +125,7 @@ jobs:
           cat clang-tidy.log
           version="$(clang-tidy --version | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
           python3 tools/clang_tidy_to_sarif.py clang-tidy.log clang-tidy.sarif \
-            --tool-version "$version" || status=1
+            --tool-version "$version" --github-annotations || status=1
           if [ "$status" -ne 0 ]; then
             echo "::error title=clang-tidy::clang-tidy reported findings (listed above); fix them or add a justified NOLINT"
             exit 1

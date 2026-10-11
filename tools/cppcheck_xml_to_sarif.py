@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert cppcheck XML (--xml, version 2) output to SARIF 2.1.0.
 
-Usage: cppcheck_xml_to_sarif.py CPPCHECK_XML OUTPUT_SARIF [--root DIR]
+Usage: cppcheck_xml_to_sarif.py CPPCHECK_XML OUTPUT_SARIF [--root DIR] [--github-annotations]
 
 Cppcheck only gained --output-format=sarif in 2.16; Ubuntu 24.04 (the CI
 runner and the agent environment) ships 2.13, so CI emits XML and converts it
@@ -9,13 +9,17 @@ here. Each <error> becomes one result whose ruleId is the cppcheck id; the
 first <location> is the primary location.
 
 Prints every finding and exits 1 if there is at least one, 0 otherwise, and 2
-if the XML cannot be read.
+if the XML cannot be read. In GitHub Actions (or with --github-annotations)
+each finding is also printed as an error annotation and listed in the step
+summary; see github_annotations.py.
 """
 import argparse
 import json
 import os
 import sys
 import xml.etree.ElementTree as ET
+
+import github_annotations
 
 LEVELS = {
     "error": "error",
@@ -110,6 +114,8 @@ def main(argv):
     parser.add_argument("xml")
     parser.add_argument("output")
     parser.add_argument("--root", default=os.getcwd())
+    parser.add_argument("--github-annotations", action="store_true",
+                        help="print GitHub error annotations (default when GITHUB_ACTIONS=true)")
     args = parser.parse_args(argv)
 
     root = os.path.abspath(args.root)
@@ -126,6 +132,12 @@ def main(argv):
     for result in results:
         print(describe(result))
     print("cppcheck %s: %d finding(s), SARIF written to %s" % (version, len(results), args.output))
+    if github_annotations.enabled(args.github_annotations):
+        items = github_annotations.sarif_items(results, root)
+        github_annotations.print_annotations("cppcheck", items, args.output)
+        github_annotations.append_summary(
+            "cppcheck: %d finding(s)" % len(items) if items else "cppcheck: no findings",
+            "Rule", items)
     return 1 if results else 0
 
 

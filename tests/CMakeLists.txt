@@ -23,6 +23,8 @@ endforeach()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME hook_policies
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/hooks/test_policies.py)
+add_test(NAME report_tools
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_annotations.py)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/quarantine.cmake)
 foreach(test_case IN LISTS SIGRELAY_QUARANTINED_TESTS)
