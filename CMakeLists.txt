@@ -14,9 +14,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-Wall -Wextra)
 
+add_subdirectory(third_party/zlib)
+
 add_library(sigrelay STATIC
   src/sigrelay.c
   src/sip_parser.c
+  src/sip_body.c
   src/diameter_parser.c
   src/relay.c
   src/upstream.c
@@ -25,6 +28,7 @@ target_include_directories(sigrelay
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+target_link_libraries(sigrelay PRIVATE sigrelay_zlib)
 
 add_executable(sigrelayd
   src/main.c

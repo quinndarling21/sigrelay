@@ -24,3 +24,7 @@ Static analysis runs in CI with cppcheck and clang-tidy (configured in `.clang-t
 - **Route cache** (`sigrelay_upstream_cache`): eight exact-match entries mapping a SIP domain to the next hop last selected for it, so repeated requests for the same domain stick to one hop for `ttl_ms`. Expired entries count as misses; when the cache is full the entry closest to expiry is replaced. Call `sigrelay_upstream_cache_invalidate` when the cached hop goes down.
 
 The library never reads a clock: every call that needs time takes `now_ms` from the caller, so any monotonic millisecond source works.
+
+## Third-party code
+
+sigrelay vendors zlib 1.3.1 in `third_party/zlib` to decode `gzip` and `deflate` SIP message bodies. [`third_party/README.md`](third_party/README.md) lists the vendored libraries and describes how they are managed and upgraded.

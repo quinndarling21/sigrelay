@@ -1,11 +1,14 @@
 add_executable(sigrelay_tests
   test_main.c
   test_sip.c
+  test_sip_body.c
   test_diameter.c
   test_relay.c
   test_upstream.c
 )
-target_link_libraries(sigrelay_tests PRIVATE sigrelay)
+# sigrelay_zlib is linked directly because the body tests compress their input
+# with zlib's deflate API.
+target_link_libraries(sigrelay_tests PRIVATE sigrelay sigrelay_zlib)
 
 # test_list.h is the single list of test cases. Each entry is registered as its
 # own ctest test so JUnit output reports cases individually.

@@ -50,6 +50,7 @@ typedef struct {
     sigrelay_str cseq_method;
     int has_content_length;
     size_t content_length;
+    sigrelay_str content_encoding; /* empty when absent; see sigrelay/sip_body.h */
     sigrelay_str body;
     size_t header_len;  /* start line and headers, including the empty line */
     size_t message_len; /* header_len plus body length */
@@ -58,8 +59,9 @@ typedef struct {
 /*
  * Parses one SIP message from buf[0, len). buf does not need to be
  * NUL-terminated and is never read past len. Requires Via, From, To, Call-ID
- * and CSeq; compact header forms (v, f, t, i, l) are accepted. When
+ * and CSeq; compact header forms (v, f, t, i, l, e) are accepted. When
  * Content-Length is absent the body extends to the end of the buffer.
+ * Content-Encoding may appear at most once and is not applied to body.
  * *msg is written only on success.
  */
 sigrelay_sip_status sigrelay_sip_parse(const char *buf, size_t len, sigrelay_sip_message *msg);

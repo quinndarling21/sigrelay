@@ -12,7 +12,8 @@ enum {
     SEEN_TO = 1u << 2,
     SEEN_CALL_ID = 1u << 3,
     SEEN_CSEQ = 1u << 4,
-    SEEN_CONTENT_LENGTH = 1u << 5
+    SEEN_CONTENT_LENGTH = 1u << 5,
+    SEEN_CONTENT_ENCODING = 1u << 6
 };
 
 #define SEEN_REQUIRED (SEEN_VIA | SEEN_FROM | SEEN_TO | SEEN_CALL_ID | SEEN_CSEQ)
@@ -337,6 +338,14 @@ static sigrelay_sip_status parse_header_line(const char *line, size_t n, sigrela
         m->has_content_length = 1;
         m->content_length = (size_t)length;
         return SIGRELAY_SIP_OK;
+    }
+    /*
+     * A second Content-Encoding row would add a coding to the list; it is
+     * rejected rather than kept or dropped so the body is never decoded with
+     * only part of its codings.
+     */
+    if (str_ieq(name.ptr, name.len, "Content-Encoding") || str_ieq(name.ptr, name.len, "e")) {
+        return set_once(seen, SEEN_CONTENT_ENCODING, value, &m->content_encoding);
     }
     return SIGRELAY_SIP_OK;
 }
