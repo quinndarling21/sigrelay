@@ -14,6 +14,9 @@ with a blocked command is denied.
 
 Variable assignments in front of a command (VAR=x cmd, env VAR=x cmd) are passed
 into bash -c / eval / find -exec, so they are checked where they reach git.
+
+A command run by xargs is checked with one more argument that no rule accepts, since
+xargs adds arguments from its input that the hook cannot see.
 """
 import json
 import os
@@ -45,6 +48,15 @@ INLINE_CODE = {
     "ruby": ("e", (), RUBY_NETWORK, "open-uri, Net::HTTP, Net::FTP, Socket, URI"),
 }
 SHORT_OPTIONS = re.compile(r"^-[A-Za-z]+$")
+# Module specifiers deno loads from outside the repository; data: hides its code.
+DENO_REMOTE = re.compile(r"^(https?://|npm:|jsr:|data:)", re.IGNORECASE)
+DENO_REMOTE_IN_CODE = re.compile(r"\b(npm|jsr):|\b(import|from)\b[^;]*https?://",
+                                 re.IGNORECASE)
+DENO_NETWORK = re.compile(r"\bDeno\.(connect\w*|listen\w*|resolveDns|startTls|createHttpClient|"
+                          r"serve\w*)\b")
+# Permissions that let deno code make network calls or import remote modules.
+DENO_NETWORK_OPTIONS = ("--allow-net", "--allow-import", "--allow-all")
+DENO_NETWORK_FLAGS = set("NIA")
 MAX_DEPTH = 8
 
 NETWORK_TOOLS = {"curl", "wget", "nc", "ncat", "netcat", "nc.openbsd", "nc.traditional"}
@@ -86,10 +98,33 @@ FETCH_OPTIONS_WITH_VALUE = {
               "--negotiation-tip"}, "sXo"),
 }
 LS_REMOTE_OPTIONS_WITH_VALUE = {"--upload-pack", "--sort", "--server-option"}
-CONFIG_OPTIONS_WITH_VALUE = {"--file", "--blob", "--type", "--default", "--comment", "--value"}
+# Long options of git config in any git version, and whether each takes a value. git takes
+# --no-<option> and any unique prefix of either form (--fil is --file, --glo is --global),
+# so a word is resolved against this whole table; one that matches no option or several
+# options is not classified.
+CONFIG_OPTIONS = {
+    "file": True, "blob": True, "type": True, "default": True, "comment": True, "value": True,
+    "url": True, "global": False, "system": False, "local": False, "worktree": False,
+    "get": False, "get-all": False, "get-regexp": False, "get-urlmatch": False,
+    "get-color": False, "get-colorbool": False, "list": False, "edit": False, "add": False,
+    "append": False, "replace-all": False, "unset": False, "unset-all": False,
+    "rename-section": False, "remove-section": False, "fixed-value": False, "all": False,
+    "regexp": False, "bool": False, "int": False, "bool-or-int": False, "bool-or-str": False,
+    "path": False, "expiry-date": False, "null": False, "name-only": False, "includes": False,
+    "show-origin": False, "show-scope": False, "show-names": False, "help": False,
+}
+CONFIG_OPTION_NAMES = list(CONFIG_OPTIONS) + ["no-" + name for name in CONFIG_OPTIONS]
+CONFIG_SHORT_OPTIONS = {"f": "file", "t": "type", "l": "list", "e": "edit", "z": "null",
+                        "h": "help"}
 CONFIG_SUBCOMMANDS = {"get", "list", "set", "unset", "rename-section", "remove-section", "edit"}
-CONFIG_READS = ("get", "list")
-CONFIG_REMOVALS = ("unset", "remove-section")
+CONFIG_READS = {"get", "get-all", "get-regexp", "get-urlmatch", "get-color", "get-colorbool",
+                "list"}
+CONFIG_WRITES = {"set", "add", "append", "replace-all", "unset", "unset-all", "rename-section",
+                 "remove-section"}
+# Words bash may turn into other words: substitutions, expansions ($'..' and $".." quoting
+# included) and brace lists. A $ that ends a word (a regex anchor) is left alone.
+SHELL_EXPANSION = re.compile(r"`|\$(?!$)|\{[^}]*(,|\.\.)[^}]*\}")
+GLOB = re.compile(r"[*?\[{]")
 CARGO_OPTIONS_WITH_VALUE = {"--color", "--config", "--explain"}
 NPM_INSTALL = {"install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
                "isntall", "add", "install-test", "it"}
@@ -119,18 +154,17 @@ NODE_INSTALL_OPTIONS_WITH_VALUE = {
 # submodule.* keys (recurse, active, branch) do not choose the repository.
 REDIRECTING_CONFIG = re.compile(
     r"^(remote|url|include|includeif|alias)\.|^submodule\..+\.(url|update)$", re.IGNORECASE)
+# Keys and sections that git config may not write.
 REDIRECTING_SECTION = re.compile(r"^(remote|url|include|includeif|alias|submodule)(\.|$)",
                                  re.IGNORECASE)
-# Keys that git config may not write.
-RETARGETING_CONFIG = re.compile(
-    r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|include\.path|"
-    r"includeif\..+|alias\..+|submodule\..+\.(url|update))$",
-    re.IGNORECASE)
 GIT_CONFIG_FILE_ENV = {"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}
 GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 # These decide where git finds ~/.gitconfig and $XDG_CONFIG_HOME/git/config.
 CONFIG_HOME_ENV = {"HOME", "XDG_CONFIG_HOME"}
 EXPORTS = {"export", "declare", "typeset", "readonly", "local"}
+# Stands in for the words xargs appends from its input, which a rule cannot see: it is
+# not a gh command, not origin, and an expansion for git config.
+XARGS_INPUT = "$(xargs input)"
 
 OUR_REPO = "quinndarling21/sigrelay"
 OUR_OWNER, OUR_NAME = OUR_REPO.split("/")
@@ -147,15 +181,69 @@ GH_API_OPTIONS_WITH_VALUE = {"--cache", "--field", "--header", "--hostname", "--
 # reference`), so the word after one is its value even when it looks like -R.
 GH_OPTIONS_WITH_VALUE = {"--title", "--body", "--notes", "--subject", "--search", "--jq",
                          "--header", "--raw-field", "--description", "-b"}
+GH_GROUP_OPTIONS_WITH_VALUE = GH_OPTIONS_WITH_VALUE | {"-R", "--repo"}
+# gh command groups and their subcommands (gh 2.102.0, `gh help reference`), with cobra
+# aliases after |. gh runs an extension for an unknown top-level word and adds a user alias
+# as one new word under any group (`gh alias set 'run x' 'release download'` makes
+# `gh run x`). Which aliases and extensions exist is not decidable from the command line,
+# so every word where gh expects a subcommand must be listed here; a command added by a
+# later gh release is denied until it is added.
+GH_GROUPS = {
+    "": "agent-task|agent-tasks|agent|agents alias api attestation|at auth browse cache "
+        "codespace|cs completion config copilot discussion extension|extensions|ext gist "
+        "gpg-key help issue label licenses org pr preview project release repo ruleset|rs run "
+        "search secret skill|skills ssh-key status variable version workflow accessibility "
+        "actions environment exit-codes formatting mintty reference telemetry",
+    "agent-task": "create list view",
+    "attestation": "download trusted-root verify",
+    "auth": "login logout refresh setup-git status switch token",
+    "cache": "delete list|ls",
+    "codespace": "code cp create delete edit jupyter list|ls logs ports rebuild ssh stop view",
+    "codespace ports": "forward visibility",
+    "config": "clear-cache get list|ls set",
+    "discussion": "comment create edit list|ls view",
+    "extension": "browse create exec install list|ls remove|uninstall search upgrade",
+    "gist": "clone create|new delete edit list|ls rename view",
+    "gpg-key": "add delete list|ls",
+    "issue": "close comment create|new delete develop edit list|ls lock pin reopen status "
+             "transfer unlock unpin view",
+    "label": "clone create delete edit list|ls",
+    "org": "list|ls",
+    "pr": "checkout|co checks close comment create|new diff edit list|ls lock merge ready "
+          "reopen revert review status unlock update-branch view",
+    "preview": "prompter",
+    "project": "close copy create delete edit field-create field-delete field-list item-add "
+               "item-archive item-create item-delete item-edit item-list link list|ls "
+               "mark-template unlink view",
+    "release": "create|new delete delete-asset download edit list|ls upload verify "
+               "verify-asset view",
+    "repo": "archive autolink clone create|new delete deploy-key edit fork gitignore license "
+            "list|ls read-dir read-file rename set-default sync unarchive view",
+    "repo autolink": "create|new delete list|ls view",
+    "repo deploy-key": "add delete list|ls",
+    "repo gitignore": "list|ls view",
+    "repo license": "list|ls view",
+    "ruleset": "check list|ls view",
+    "run": "cancel delete download list|ls rerun view watch",
+    "search": "code commits issues prs repos",
+    "secret": "delete|remove list|ls set",
+    "skill": "install|add list|ls preview|show publish search update",
+    "ssh-key": "add delete list|ls",
+    "variable": "delete|remove get list|ls set",
+    "workflow": "disable enable list|ls run view",
+}
+GH_COMMANDS = {group: {alias: names.split("|")[0]
+                       for names in spec.split() for alias in names.split("|")}
+               for group, spec in GH_GROUPS.items()}
 
 OUTSIDE_CODE = ("new outside code (dependencies, repositories, remotes) needs human review "
                 "before it enters this repository.")
 CONFIG_OVERRIDE = ("A git config override of `remote.*`, `url.*`, `include.*`, `includeIf.*`, "
                    "`alias.*`, `submodule.*.url`, `submodule.*.update` or the config file "
                    "location")
-CONFIG_WRITE = ("A `git config` write to `remote.*.url`, `remote.*.pushurl`, `url.*.insteadOf`, "
-                "`url.*.pushInsteadOf`, `include.path`, `includeIf.*`, `alias.*`, "
-                "`submodule.*.url`, `submodule.*.update` or `.gitmodules`")
+CONFIG_WRITE = ("A `git config` write to `remote.*`, `url.*`, `submodule.*`, `alias.*`, "
+                "`include.*`, `includeIf.*` or `.gitmodules`")
+CONFIG_UNCLEAR = "`git config` with `%s` (it cannot be classified as a read or a write)"
 GH_OTHER_REPO = "`gh` aimed at a repository other than `%s`" % OUR_REPO
 GH_OTHER_HOST = "`gh` aimed at a host other than `github.com`"
 
@@ -385,48 +473,99 @@ def env_reason(assignments, git):
     return None
 
 
-def short_flags(args, short_with_value):
-    """Letters of short option clusters, up to the first letter that takes a value."""
-    flags = ""
-    for arg in args:
+def config_options(args, actions, files):
+    """Reads git config options into actions and files the way git does, up to the first
+    word that is not an option (git config stops there, so a later --get is a value).
+
+    Returns (remaining words, None), or (None, option) for an option git would not resolve
+    to exactly one entry of CONFIG_OPTIONS.
+    """
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
         if arg == "--":
-            break
-        if arg.startswith("-") and not arg.startswith("--"):
-            for flag in arg[1:]:
-                flags += flag
-                if flag in short_with_value:
+            return args[i:], None
+        if not arg.startswith("-") or arg == "-":
+            return args[i - 1:], None
+        found = []
+        if arg.startswith("--"):
+            given, attached, value = arg[2:].partition("=")
+            matches = [n for n in CONFIG_OPTION_NAMES if n.startswith(given)]
+            if given in CONFIG_OPTION_NAMES:
+                matches = [given]
+            if len(matches) != 1:
+                return None, arg
+            negated = matches[0].startswith("no-")
+            name = matches[0][3:] if negated else matches[0]
+            if CONFIG_OPTIONS[name] and not negated and not attached:
+                value = args[i] if i < len(args) else ""
+                i += 1
+            found.append((name, negated, value))
+        else:
+            for j, letter in enumerate(arg[1:], 2):
+                name = CONFIG_SHORT_OPTIONS.get(letter)
+                if name is None:
+                    return None, arg
+                if CONFIG_OPTIONS[name]:
+                    value = arg[j:]
+                    if not value:
+                        value = args[i] if i < len(args) else ""
+                        i += 1
+                    found.append((name, False, value.lstrip("=")))
                     break
-    return flags
+                found.append((name, False, ""))
+        for name, negated, value in found:
+            if name == "file" and not negated:
+                files.append(value)
+            if name in CONFIG_READS or name in CONFIG_WRITES or name == "edit":
+                if negated:
+                    actions.discard(name)
+                else:
+                    actions.add(name)
+    return [], None
 
 
 def config_reason(args):
-    """git config may read anything, but may not write where remotes, includes, aliases and
-    submodules point, nor write .gitmodules at all."""
-    end = args.index("--") if "--" in args else len(args)
-    names = [a[2:].split("=", 1)[0] for a in args[:end] if a.startswith("--")]
-    flags = short_flags(args, "ft")
-    words = positional_words(args, CONFIG_OPTIONS_WITH_VALUE, "ft")
-    gitmodules = any(os.path.basename(path) == ".gitmodules"
-                     for path in option_values(args, "--file", "f"))
-    action = None
+    """git config may read anything, but may not write a key or section that decides where
+    remotes, URLs, submodules, includes and aliases point, nor write .gitmodules at all.
+
+    An invocation is classified by its key and by whether it writes; anything that cannot
+    be classified (an unknown or ambiguous option, a word the shell expands) is denied.
+    """
+    for arg in args:
+        if SHELL_EXPANSION.search(arg):
+            return outside_code(CONFIG_UNCLEAR % arg)
+    actions, files = set(), []
+    words, unresolved = config_options(args, actions, files)
+    if words is None:
+        return outside_code(CONFIG_UNCLEAR % unresolved)
+    # git picks its subcommand from the first word that does not start with -, without
+    # knowing which options take a value, so that word must not be an option's value.
+    start = len(args) - len(words)
+    for arg in args[:start]:
+        if arg == "--":
+            break
+        if not arg.startswith("-") or arg == "-":
+            if arg in CONFIG_SUBCOMMANDS:
+                return outside_code(CONFIG_UNCLEAR % arg)
+            break
     if words and words[0] in CONFIG_SUBCOMMANDS:
-        action, words = words[0], words[1:]
-    # git accepts unambiguous prefixes of long options (--ed is --edit).
-    if action == "edit" or "e" in flags or any(len(n) >= 2 and "edit".startswith(n)
-                                                for n in names):
+        actions.add(words[0])
+        words, unresolved = config_options(words[1:], actions, files)
+        if words is None:
+            return outside_code(CONFIG_UNCLEAR % unresolved)
+    if "edit" in actions:
         return outside_code("`git config --edit` (it can rewrite where remotes point)")
-    if action == "rename-section" or any(len(n) >= 3 and "rename-section".startswith(n)
-                                         for n in names):
-        if gitmodules or any(REDIRECTING_SECTION.match(w) for w in words):
-            return outside_code(CONFIG_WRITE)
+    # Without an action, one name is a read and a name with a value is a write.
+    if not actions & CONFIG_WRITES and (actions & CONFIG_READS or len(words) < 2):
         return None
-    if action in CONFIG_READS or "l" in flags or any(n.startswith(CONFIG_READS) for n in names):
-        return None
-    removing = action in CONFIG_REMOVALS or any(n.startswith(CONFIG_REMOVALS) for n in names)
-    if gitmodules and (removing or len(words) >= 2):
+    if any(GLOB.search(path) or os.path.basename(path).lower() == ".gitmodules"
+           for path in files):
         return outside_code(CONFIG_WRITE)
-    # A single name is a read; a name and a value (set, --add, --replace-all) is a write.
-    if not removing and len(words) >= 2 and any(RETARGETING_CONFIG.match(w) for w in words):
+    names = words[:2] if "rename-section" in actions else words[:1]
+    if any(REDIRECTING_SECTION.match(word) for word in words) or any(
+            GLOB.search(name) for name in names):
         return outside_code(CONFIG_WRITE)
     return None
 
@@ -571,23 +710,41 @@ def option_values(args, long_name, short_name="", value_options=()):
 
 
 def gh_command(args):
-    """(index, word) of each gh command word, found as cobra finds subcommands: a flag
-    without = is taken to have a value."""
-    words = []
+    """(command, end, reason): the gh command path with cobra aliases resolved, the index
+    after its last word, and why it is denied when a word may be an alias or an extension.
+
+    Words are found as cobra finds subcommands: until a command that is not a group, a flag
+    without = takes the next word as its value. Only flags known to take a value everywhere
+    are accepted there, since a boolean flag would leave the next word as the command.
+    """
+    path = []
     i = 0
-    while i < len(args):
+    while " ".join(path) in GH_COMMANDS and i < len(args):
         arg = args[i]
         if arg == "--":
             break
-        if not arg.startswith("-"):
-            words.append((i, arg))
-            i += 1
-        elif "=" in arg or arg in ("-h", "--help", "--version") or (
-                not arg.startswith("--") and len(arg) != 2):
-            i += 1
-        else:
-            i += 2
-    return words
+        if arg.startswith("-"):
+            if "=" in arg or arg in ("-h", "--help", "--version") or (
+                    not arg.startswith("--") and len(arg) != 2):
+                i += 1
+            elif arg in GH_GROUP_OPTIONS_WITH_VALUE:
+                i += 2
+            else:
+                return path, i, outside_code(
+                    "`gh` with `%s` before its subcommand (it can hide an alias)" % arg)
+            continue
+        name = GH_COMMANDS[" ".join(path)].get(arg)
+        if name is None:
+            return path, i, outside_code(
+                "`gh %s` (not a gh command, so it may be an alias or an extension)"
+                % " ".join(path + [arg]))
+        if name == "alias" and not path:
+            return path, i, outside_code(
+                "`gh alias` (an alias can hide `gh repo clone`, `gh release download` or a "
+                "shell command)")
+        path.append(name)
+        i += 1
+    return path, i, None
 
 
 def gh_api_reason(args):
@@ -618,13 +775,14 @@ def gh_reason(args):
     repos = option_values(args, "--repo", "R", GH_OPTIONS_WITH_VALUE)
     if any(not is_our_repo(repo) for repo in repos):
         return outside_code(GH_OTHER_REPO)
-    command = gh_command(args)
-    path = [word for _, word in command[:2]]
+    path, end, reason = gh_command(args)
+    if reason:
+        return reason
     if path in (["repo", "clone"], ["gist", "clone"]):
         return outside_code("`gh %s clone`" % path[0])
     if path == ["release", "download"]:
         return outside_code("`gh release download`")
-    if path[:1] in (["extension"], ["extensions"], ["ext"]) and path[1:] == ["install"]:
+    if path == ["extension", "install"]:
         return outside_code("`gh extension install`")
     if path == ["repo", "fork"] and any(arg.split("=", 1)[0] in ("--clone", "--remote")
                                         and not arg.endswith("=false") for arg in args):
@@ -633,8 +791,8 @@ def gh_reason(args):
         for arg in args:
             if any(not same_repo(owner, name) for owner, name in GITHUB_URL.findall(arg)):
                 return outside_code(GH_OTHER_REPO)
-    if path[:1] == ["api"]:
-        return gh_api_reason(args[command[0][0] + 1:])
+    if path == ["api"]:
+        return gh_api_reason(args[end:])
     return None
 
 
@@ -656,12 +814,33 @@ def inline_code_reason(interpreter, args):
 
 
 def deno_reason(args):
-    words = [arg for arg in args if not arg.startswith("-")]
-    if "eval" in words:
-        code = " ".join(args[args.index("eval") + 1:])
-        if JS_NETWORK.search(code) or NETWORK_TOOL_WORDS.search(code):
-            return ("`deno eval` code that uses fetch, http, https, net, tls, dgram, undici or a "
-                    "network tool is not allowed because new network calls need review.")
+    """deno may not load remote modules or run code with network access; a local script
+    run without network permissions is allowed, since its imports are not visible here."""
+    values = args + [arg.split("=", 1)[1] for arg in args if arg.startswith("-") and "=" in arg]
+    if any(DENO_REMOTE.match(value) for value in values):
+        return outside_code("`deno` with a remote module (`https://`, `http://`, `npm:`, "
+                            "`jsr:` or `data:`)")
+    words = positional_words(args, {"--log-level"}, "L")
+    if words[:1] == ["add"] or (words[:1] in (["install"], ["i"]) and words[1:]):
+        return outside_code("`deno %s` with a package" % words[0])
+    for arg in args:
+        if arg.split("=", 1)[0] in DENO_NETWORK_OPTIONS or (
+                SHORT_OPTIONS.match(arg) and DENO_NETWORK_FLAGS & set(arg[1:])):
+            return ("`deno` with `--allow-net`, `--allow-import` or `--allow-all` (`-N`, `-I`, "
+                    "`-A`) is not allowed because new network calls need review.")
+    if words[:1] not in (["eval"], ["repl"]):
+        return None
+    if words[0] == "repl" and any(arg.split("=", 1)[0] == "--eval-file" for arg in args):
+        return ("`deno repl --eval-file` (it runs files with every permission) is not allowed "
+                "because new network calls need review.")
+    code = " ".join(args[args.index(words[0]) + 1:])
+    command = "deno eval" if words[0] == "eval" else "deno repl --eval"
+    if DENO_REMOTE_IN_CODE.search(code):
+        return outside_code("`%s` code that imports a remote module" % command)
+    if JS_NETWORK.search(code) or DENO_NETWORK.search(code) or NETWORK_TOOL_WORDS.search(code):
+        return ("`%s` code that uses fetch, http, https, net, tls, dgram, undici, Deno.connect "
+                "or a network tool is not allowed because new network calls need review."
+                % command)
     return None
 
 
@@ -728,6 +907,7 @@ def segment_reason(words, depth, env=()):
                 return reason
 
     i = 0
+    xargs = False
     while i < len(words):
         word = words[i]
         name = os.path.basename(word)
@@ -736,6 +916,7 @@ def segment_reason(words, depth, env=()):
         elif name == "command" and i + 1 < len(words) and words[i + 1] in ("-v", "-V"):
             return None  # looks a command up without running it
         elif name in WRAPPERS:
+            xargs = xargs or name == "xargs"
             i = skip_wrapper(name, words, i + 1)
         else:
             break
@@ -763,7 +944,7 @@ def segment_reason(words, depth, env=()):
                 if reason:
                     return reason
         return None
-    return program_reason(name, args, env)
+    return program_reason(name, args + [XARGS_INPUT] if xargs else args, env)
 
 
 def command_reason(command, depth=0, env=()):
