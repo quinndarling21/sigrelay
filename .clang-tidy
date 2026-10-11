@@ -1,0 +1,18 @@
+# clang-tidy configuration for src/. CI treats every finding as an error.
+#
+# Disabled checks:
+# - bugprone-easily-swappable-parameters: every parser helper takes a bounded
+#   buffer as (pointer, length, offset); the check flags each of those
+#   signatures and would push the API away from the ptr + len convention.
+# - clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling: it
+#   demands the C11 Annex K functions (memcpy_s, memset_s), which glibc does
+#   not implement. Lengths are validated before every memcpy/memset instead.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/include/sigrelay/.*'

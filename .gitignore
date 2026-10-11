@@ -1,7 +1,18 @@
 # Build directories
 build/
+build-*/
 out/
 cmake-build-*/
+
+# CI reports
+ctest-junit.xml
+cppcheck.xml
+cppcheck.sarif
+clang-tidy.log
+clang-tidy.sarif
+
+# Python bytecode
+__pycache__/
 
 # CMake generated files
 CMakeCache.txt
