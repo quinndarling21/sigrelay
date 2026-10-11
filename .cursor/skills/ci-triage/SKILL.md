@@ -1,6 +1,6 @@
 ---
 name: ci-triage
-description: Triages a failed GitHub Actions run of the sigrelay repository. Reads the failing jobs' check-run annotations and logs (cppcheck and clang-tidy findings, failing ctest tests), plus the SARIF and JUnit artifacts when reachable, classifies every item as real, flaky or false positive, posts one triage comment on the branch's open PR, and opens dispositions and fix PRs. Use when a CI run of this repository fails or when asked to triage a run ID or commit.
+description: Triages a failed GitHub Actions run of the sigrelay repository. Reads the failing jobs' check-run annotations and logs (cppcheck and clang-tidy findings, failing ctest tests), plus the SARIF and JUnit artifacts when reachable, reruns timing-sensitive failing tests 20 times in isolation, classifies every item as real, flaky or false positive, posts one triage comment on the branch's open PR, and opens dispositions and fix PRs. Use when a CI run of this repository fails or when asked to triage a run ID or commit.
 ---
 
 # CI triage
@@ -100,10 +100,34 @@ State in the final reply which sources were unavailable (annotations, logs or ar
 
 ## 4. Classify every item
 
-Items are: each cppcheck or clang-tidy finding, each failing test, and each failing job that is not explained by those two (compile error, configure error, tool install failure, timeout). Classify each item as exactly one of:
+Items are: each cppcheck or clang-tidy finding, each failing test, and each failing job that is not explained by those two (compile error, configure error, tool install failure, timeout).
+
+### (a) Rerun timing-sensitive tests before classifying them
+
+For every failing test that involves time, timeouts, TTLs, randomness or ordering, rerun that single test 20 times in isolation on the failing commit before you classify it. Decide from the test function (`test_<name>` in `tests/test_*.c`; `tests/hooks/test_policies.py` for `hook_policies`, `tests/tools/test_annotations.py` for `report_tools`) and the code it calls: wall-clock reads, sleeps, timeouts, TTL or expiry logic, random values, threads, iteration order, or state shared with other tests. A test that timed out in CI qualifies. When unsure, rerun.
+
+Build the failing commit with gcc, as the build-and-test job does, in a worktree outside the repository:
+
+```bash
+git fetch origin <headSha>
+git worktree add --detach /tmp/ci-triage-<id>/checkout <headSha>
+cd /tmp/ci-triage-<id>/checkout && git rev-parse HEAD   # must print <headSha>
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON && cmake --build build --parallel
+for i in $(seq 20); do ctest --test-dir build -R '^<name>$' --output-on-failure >/dev/null && echo pass || echo fail; done | sort | uniq -c
+```
+
+ctest has no default timeout here, so for a test that timed out or hung in CI add `--timeout 60` to the `ctest` call; a hang then counts as a failure instead of stalling the loop. Report the result as `<passes>/20 passed`, for example `4/20 passed`, and read it as follows:
+
+- Mixed (1 to 19 of 20 passed): flaky.
+- `0/20 passed`: real, a deterministic failure.
+- `20/20 passed`: the CI failure did not reproduce locally. Say so in the Reasoning and classify the test from the CI evidence (annotations, log, CI rerun) as below.
+
+### (b) Classification
+
+Classify each item as exactly one of:
 
 - **real**: the code or the test is wrong and must be fixed.
-- **flaky**: the result does not depend on the code. Requires evidence: it passes when the failed jobs are rerun (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the test depends on timing, ordering or the environment and you can point at that dependence. Rerun at most once.
+- **flaky**: the result does not depend on the code. Requires evidence: a mixed result in the isolated reruns of (a); or, for a test that (a) did not rerun or that passed 20/20 there and for a failing job, it passes when the failed jobs are rerun in CI (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the result depends on timing, ordering or the environment and you can point at that dependence. Rerun in CI at most once. A test with `0/20 passed` is never flaky.
 - **false positive**: the tool is wrong. Requires a concrete reason the code is correct, citing the code that makes it so (`file:line` of the bounds check or invariant the analyzer did not follow).
 
 If you cannot produce the required evidence for flaky or false positive, classify the item as real.
@@ -112,6 +136,7 @@ For every item record:
 
 - **Item**: the ruleId, the test name, or the job name.
 - **Type**: `cppcheck`, `clang-tidy`, `test` or `job`.
+- **Reruns**: `<passes>/20 passed` from (a), then `CI attempt <n> passed` or `CI attempt <n> failed` if you reran the failed jobs in CI; `none` if neither.
 - **Cause**: `file:line` (from the annotation, the finding or test line in the log, or SARIF/JUnit) or a verbatim quoted log line.
 - **Reasoning**: one line.
 
@@ -133,9 +158,9 @@ Otherwise post ONE comment on that PR (in Cursor Cloud Agents, the pull-request 
 Run: <run url> (branch `<headBranch>`, commit `<headSha>`)
 Failing jobs: <job>, <job>
 
-| Item | Type | Classification | Cause | Reasoning |
-| --- | --- | --- | --- | --- |
-| `<item>` | <type> | <real, flaky or false positive> | `<file:line>` or "<log line>" | <one line> |
+| Item | Type | Classification | Reruns | Cause | Reasoning |
+| --- | --- | --- | --- | --- | --- |
+| `<item>` | <type> | <real, flaky or false positive> | <e.g. 4/20 passed, or none> | `<file:line>` or "<log line>" | <one line> |
 
 Pull requests: none yet
 ```
@@ -155,17 +180,20 @@ Later steps add PR links by editing this comment in place (GitHub MCP `update_is
    // NOLINTNEXTLINE(<check>)
    ```
    Suppress only the reported id or check on that line. Never disable checks in `.clang-tidy`, add `--suppress` to CI, or use a bare `NOLINT`.
-3. For each flaky test, add its name to `SIGRELAY_QUARANTINED_TESTS` in `tests/quarantine.cmake` with the triage comment URL as a trailing comment:
+3. For each flaky test, fix the nondeterminism: a deterministic or injected clock instead of wall-clock timing, random generators started from a fixed value, or explicit ordering. Raising a timeout, adding a sleep or a retry, or widening a tolerance does not fix it. Keep every assertion and expected value of the test. Step 6.4 proves the fix with 20/20 passes in isolation.
+
+   Quarantine only when no such fix is feasible, for example when the nondeterminism comes from the runner or a system service the test cannot control. Add the test to `SIGRELAY_QUARANTINED_TESTS` in `tests/quarantine.cmake` with the reason and the triage comment URL as a trailing comment, and state the same reason in the PR body:
    ```cmake
    set(SIGRELAY_QUARANTINED_TESTS
-     <test name>  # <triage comment url>
+     <test name>  # <why the nondeterminism cannot be fixed>; <triage comment url>
    )
    ```
 4. Verify locally before opening the PR. This applies to every PR in steps 6 and 7:
    - Run `cppcheck --version` and `clang-tidy --version`. If either is missing, run `sudo apt-get install -y cppcheck clang-tidy` once; if a scanner is still missing, say so explicitly in the PR body (for example "clang-tidy not rerun locally: not installable in the agent environment") and leave that check to CI. Never skip a scanner silently.
    - Configure and build with both compilers, warnings as errors, then run `ctest -LE quarantine`.
    - Rerun the scanner that reported each item and confirm the item is gone and no new finding appears. Run both scanners whenever the change touches `src/` or `include/`, the directories they scan.
-   - Put the tool versions and the results (ctest summary line, each converter's finding count) in the PR body.
+   - For each flaky test fixed in step 6.3, rerun it 20 times in isolation against `build` with the loop from step 4 (a); it must report `20/20 passed`. If step 4 (a) also gave 20/20 on the failing commit, the reruns cannot show the fix: say so in the PR body and name the change that removes the nondeterminism.
+   - Put the tool versions and the results (ctest summary line, each converter's finding count, each fixed flaky test's rerun count next to its count from step 4 (a), for example "20/20 passed (4/20 on `<headSha>`)") in the PR body.
 
    The commands, as in `.github/workflows/ci.yml` (if the two differ, follow ci.yml). clang-tidy gets its own build directory here so that `build/` keeps the tests:
    ```bash
@@ -181,8 +209,8 @@ Later steps add PR links by editing this comment in place (GitHub MCP `update_is
    clang-tidy -p build-tidy --quiet src/*.c > clang-tidy.log 2>&1; cat clang-tidy.log
    python3 tools/clang_tidy_to_sarif.py clang-tidy.log clang-tidy.sarif
    ```
-   For the dispositions PR, every suppressed finding must be gone and nothing else may change. CI on the PR then confirms the result is green.
-5. Open ONE PR targeting `<headBranch>`, titled `CI triage <id>: dispositions`, whose body lists each disposition with its reasoning and links the triage comment.
+   For the dispositions PR, every suppressed finding must be gone, every fixed flaky test must pass 20/20 in isolation, and nothing else may change. CI on the PR then confirms the result is green.
+5. Open ONE PR targeting `<headBranch>`, titled `CI triage <id>: dispositions`, whose body lists each disposition with its reasoning (for a fixed flaky test its rerun counts, for a quarantined test why no fix is feasible) and links the triage comment.
 
 ## 7. Fix PRs (one per real item)
 
@@ -210,9 +238,9 @@ Always state:
 - each cppcheck and clang-tidy finding as ruleId and `file:line`;
 - each failing test name;
 - which evidence sources were unavailable (annotations, logs or artifacts);
-- the classification table (Item | Type | Classification | Cause | Reasoning);
+- the classification table (Item | Type | Classification | Reruns | Cause | Reasoning);
 - the triage comment URL and PR URLs, if any.
 
 ## Jenkins builds
 
-A request for a Jenkins build (see the `Jenkinsfile`) carries the build URL, branch, commit and the failing stages' output instead of a run ID. Treat the build URL as the run ID and run URL, apply step 2 to the branch, take evidence from the request and the archived reports it names instead of check-run annotations, `gh run view` and `gh run download`, and continue from step 4. Rerunning is not available, so classify an item as flaky only with timing, ordering or environment evidence.
+A request for a Jenkins build (see the `Jenkinsfile`) carries the build URL, branch, commit and the failing stages' output instead of a run ID. Treat the build URL as the run ID and run URL, apply step 2 to the branch, take evidence from the request and the archived reports it names instead of check-run annotations, `gh run view` and `gh run download`, and continue from step 4. The isolated reruns of step 4 (a) apply as usual; rerunning the Jenkins build is not available, so otherwise classify an item as flaky only with timing, ordering or environment evidence.
