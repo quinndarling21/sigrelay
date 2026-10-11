@@ -20,6 +20,10 @@ foreach(entry IN LISTS test_case_entries)
   add_test(NAME ${test_case} COMMAND sigrelay_tests ${test_case})
 endforeach()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME hook_policies
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/hooks/test_policies.py)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/quarantine.cmake)
 foreach(test_case IN LISTS SIGRELAY_QUARANTINED_TESTS)
   if(NOT TEST ${test_case})

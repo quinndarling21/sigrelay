@@ -1,0 +1,24 @@
+---
+description: Security baseline for all code, scripts and configuration in this repository
+alwaysApply: true
+---
+
+# Security baseline
+
+## Secrets
+- Never put secrets, API keys, tokens, passwords or private keys in code, tests, CI configuration, commit messages or logs.
+- Read credentials from the environment or the CI secret store at runtime. If a change needs a new secret, name the variable and stop; do not invent placeholder values that look real.
+
+## External input
+- Treat every byte from the network, files, environment variables and command-line arguments as untrusted.
+- Validate length, range and format before use. Reject malformed input with an explicit error instead of guessing or repairing it.
+
+## Network calls and dependencies
+- Do not add network calls (sockets, HTTP clients, DNS lookups, outbound connections from scripts or CI) without review.
+- Do not add libraries, packages, toolchains, GitHub Actions or downloaded binaries without review. Prefer what the distribution's package manager already provides.
+
+## Logging
+- Use structured logging with explicit levels (error, warn, info, debug). Every message carries an event name and key-value fields, not free-form string concatenation.
+- Never log full SIP or Diameter message payloads.
+- Never log subscriber identifiers (IMSI, MSISDN, SIP URIs or anything derived from them) at info level or above. When an identifier is needed for debugging, log it at debug level only, truncated or hashed.
+- Never log secrets, session keys or authentication material at any level.
