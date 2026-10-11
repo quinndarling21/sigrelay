@@ -19,6 +19,7 @@ add_library(sigrelay STATIC
   src/sip_parser.c
   src/diameter_parser.c
   src/relay.c
+  src/upstream.c
 )
 target_include_directories(sigrelay
   PUBLIC

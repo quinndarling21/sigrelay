@@ -3,6 +3,7 @@ add_executable(sigrelay_tests
   test_sip.c
   test_diameter.c
   test_relay.c
+  test_upstream.c
 )
 target_link_libraries(sigrelay_tests PRIVATE sigrelay)
 
