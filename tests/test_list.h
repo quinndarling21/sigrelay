@@ -13,6 +13,18 @@
     X(sip_rejects_malformed_start_line)     \
     X(sip_rejects_malformed_headers)        \
     X(sip_rejects_truncated_input)          \
+    X(sip_rejects_malformed_content_encoding) \
+    X(sip_parses_content_encoding)          \
+    X(sip_parses_compact_content_encoding)  \
+    X(sip_body_decodes_gzip)                \
+    X(sip_body_decodes_deflate)             \
+    X(sip_body_decodes_raw_deflate)         \
+    X(sip_body_copies_identity)             \
+    X(sip_body_rejects_unsupported_encoding) \
+    X(sip_body_rejects_corrupt_input)       \
+    X(sip_body_rejects_truncated_input)     \
+    X(sip_body_rejects_oversized_output)    \
+    X(sip_body_rejects_invalid_arguments)   \
     X(diameter_parses_header)               \
     X(diameter_iterates_avps)               \
     X(diameter_rejects_malformed_header)    \

@@ -272,3 +272,34 @@ void test_sip_rejects_truncated_input(void)
     TEST_ASSERT_EQ(SIGRELAY_SIP_ERR_INVALID_ARG, sigrelay_sip_parse(NULL, 10, &msg));
     TEST_ASSERT_EQ(SIGRELAY_SIP_ERR_INVALID_ARG, sigrelay_sip_parse(invite, INVITE_LEN, NULL));
 }
+
+void test_sip_rejects_malformed_content_encoding(void)
+{
+#define BASE                                                                \
+    "Via: SIP/2.0/UDP pcscf.example.org:5060;branch=z9hG4bK776asdhds\r\n"  \
+    "To: <sip:bob@ims.example.net>\r\n"                                     \
+    "From: <sip:alice@example.org>;tag=1928301774\r\n"                      \
+    "Call-ID: a84b4c76e66710@pcscf.example.org\r\n"                         \
+    "CSeq: 314159 INVITE\r\n"
+    static const sip_case cases[] = {
+        {BASE "Content-Encoding: gzip\r\n\r\n", SIGRELAY_SIP_OK},
+        {BASE "content-encoding :  deflate  \r\n\r\n", SIGRELAY_SIP_OK},
+        {BASE "e: identity\r\n\r\n", SIGRELAY_SIP_OK},
+        {BASE "Content-Encoding:\r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {BASE "e:   \r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {BASE "Content-Encoding: gz\x01" "ip\r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {BASE "Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n\r\n",
+         SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {BASE "Content-Encoding: gzip\r\ne: deflate\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {BASE "e: gzip\r\nCONTENT-ENCODING: identity\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+    };
+    static const char padded[] = INVITE_LINE "\r\n" BASE "Content-Encoding: \t gzip \t\r\n\r\n";
+#undef BASE
+    sigrelay_sip_message msg;
+
+    TEST_ASSERT(check_cases(INVITE_LINE, cases, sizeof(cases) / sizeof(cases[0])));
+
+    /* The value is trimmed like every other header value. */
+    TEST_ASSERT_EQ(SIGRELAY_SIP_OK, sigrelay_sip_parse(padded, sizeof(padded) - 1, &msg));
+    TEST_ASSERT_STR("gzip", msg.content_encoding);
+}
