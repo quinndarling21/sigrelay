@@ -11,6 +11,9 @@ merely contain a blocked word (grep curl, rsync) are not matched.
 
 Heredoc bodies are checked as commands as well, so a heredoc line that starts
 with a blocked command is denied.
+
+Variable assignments in front of a command (VAR=x cmd, env VAR=x cmd) are passed
+into bash -c / eval / find -exec, so they are checked where they reach git.
 """
 import json
 import os
@@ -66,16 +69,52 @@ FETCH_OPTIONS_WITH_VALUE = {
               "--shallow-since", "--shallow-exclude", "--deepen", "--refmap", "--server-option",
               "--negotiation-tip"}, "sXo"),
 }
+CONFIG_OPTIONS_WITH_VALUE = {"--file", "--blob", "--type", "--default", "--comment", "--value"}
+CONFIG_SUBCOMMANDS = {"get", "list", "set", "unset", "rename-section", "remove-section", "edit"}
+CONFIG_READS = ("get", "list", "unset", "remove-section")
 CARGO_OPTIONS_WITH_VALUE = {"--color", "--config", "--explain"}
 NPM_INSTALL = {"install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
                "isntall", "add", "install-test", "it"}
 # npm, yarn and pnpm accept options with values and nested commands anywhere
 # (npm --prefix web install, yarn global add, pnpm --filter web add), so every
 # word that is not an option is checked.
-NODE_PACKAGE_ADD = {"npm": NPM_INSTALL, "yarn": {"add"}, "yarnpkg": {"add"}, "pnpm": {"add"}}
+NODE_PACKAGE_ADD = {"npm": NPM_INSTALL, "yarn": {"add"}, "pnpm": {"add"}}
+# pnpm install / pnpm i add the packages they are given; yarn rejects them today.
+# These are the install options whose value may be the next word.
+NODE_INSTALL_OPTIONS_WITH_VALUE = {
+    "pnpm": ({"--filter", "--filter-prod", "--test-pattern", "--changed-files-ignore-pattern",
+              "--workspace-concurrency", "--child-concurrency", "--network-concurrency", "--dir",
+              "--global-dir", "--hoist-pattern", "--public-hoist-pattern", "--lockfile-dir",
+              "--loglevel", "--modules-dir", "--store-dir", "--virtual-store-dir", "--reporter",
+              "--package-import-method", "--trust-policy", "--trust-policy-exclude",
+              "--trust-policy-ignore-after"}, "FC"),
+    "yarn": ({"--use-yarnrc", "--prod", "--production", "--link-folder", "--global-folder",
+              "--modules-folder", "--preferred-cache-folder", "--cache-folder", "--mutex",
+              "--emoji", "--cwd", "--proxy", "--https-proxy", "--registry",
+              "--network-concurrency", "--network-timeout", "--scripts-prepend-node-path",
+              "--otp"}, ""),
+}
+
+# Config that decides where git fetches from: -c, --config-env and GIT_CONFIG_*
+# overrides of any key in these sections are denied.
+REDIRECTING_CONFIG = re.compile(r"^(remote|url|include|includeif)\.", re.IGNORECASE)
+REDIRECTING_SECTION = re.compile(r"^(remote|url|include|includeif)(\.|$)", re.IGNORECASE)
+# Keys that git config may not write.
+RETARGETING_CONFIG = re.compile(
+    r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|include\.path|includeif\..+)$",
+    re.IGNORECASE)
+GIT_CONFIG_FILE_ENV = {"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}
+GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_\d+$")
+# These decide where git finds ~/.gitconfig and $XDG_CONFIG_HOME/git/config.
+CONFIG_HOME_ENV = {"HOME", "XDG_CONFIG_HOME"}
+EXPORTS = {"export", "declare", "typeset", "readonly", "local"}
 
 OUTSIDE_CODE = ("new outside code (dependencies, repositories, remotes) needs human review "
                 "before it enters this repository.")
+CONFIG_OVERRIDE = ("A git config override of `remote.*`, `url.*`, `include.*`, `includeIf.*` or "
+                   "the config file location")
+CONFIG_WRITE = ("A `git config` write to `remote.*.url`, `remote.*.pushurl`, `url.*.insteadOf`, "
+                "`url.*.pushInsteadOf`, `include.path` or `includeIf.*`")
 
 
 class ParseError(Exception):
@@ -264,10 +303,89 @@ def fetch_reason(subcommand, args):
     return None
 
 
-def git_reason(args):
+def redirecting_key(key):
+    """Whether a config key can point git elsewhere; a key that is unknown here can."""
+    return not key or "$" in key or "`" in key or REDIRECTING_CONFIG.match(key) is not None
+
+
+def env_override(assignment, git):
+    """Whether VAR=value, or a bare VAR being exported, changes the config git reads.
+
+    HOME and XDG_CONFIG_HOME only count when git is the program (git is True).
+    """
+    name, _, value = assignment.partition("=")
+    if name in GIT_CONFIG_FILE_ENV:
+        return True
+    if name in CONFIG_HOME_ENV:
+        return git
+    if GIT_CONFIG_KEY_ENV.match(name):
+        return redirecting_key(value)
+    if name == "GIT_CONFIG_PARAMETERS":
+        try:
+            entries = shlex.split(value)
+        except ValueError:
+            return True
+        return not entries or any(redirecting_key(e.split("=", 1)[0]) for e in entries)
+    return False
+
+
+def short_flags(args, short_with_value):
+    """Letters of short option clusters, up to the first letter that takes a value."""
+    flags = ""
+    for arg in args:
+        if arg == "--":
+            break
+        if arg.startswith("-") and not arg.startswith("--"):
+            for flag in arg[1:]:
+                flags += flag
+                if flag in short_with_value:
+                    break
+    return flags
+
+
+def config_reason(args):
+    """git config may read anything, but may not write where remotes and includes point."""
+    end = args.index("--") if "--" in args else len(args)
+    names = [a[2:].split("=", 1)[0] for a in args[:end] if a.startswith("--")]
+    flags = short_flags(args, "ft")
+    words = positional_words(args, CONFIG_OPTIONS_WITH_VALUE, "ft")
+    action = None
+    if words and words[0] in CONFIG_SUBCOMMANDS:
+        action, words = words[0], words[1:]
+    # git accepts unambiguous prefixes of long options (--ed is --edit).
+    if action == "edit" or "e" in flags or any(len(n) >= 2 and "edit".startswith(n)
+                                                for n in names):
+        return outside_code("`git config --edit` (it can rewrite where remotes point)")
+    if action == "rename-section" or any(len(n) >= 3 and "rename-section".startswith(n)
+                                         for n in names):
+        if any(REDIRECTING_SECTION.match(w) for w in words):
+            return outside_code(CONFIG_WRITE)
+        return None
+    if action in CONFIG_READS or "l" in flags or any(n.startswith(CONFIG_READS) for n in names):
+        return None
+    # A single name is a read; a name and a value (set, --add, --replace-all) is a write.
+    if len(words) >= 2 and any(RETARGETING_CONFIG.match(w) for w in words):
+        return outside_code(CONFIG_WRITE)
+    return None
+
+
+def git_reason(args, env=()):
+    if any(env_override(assignment, True) for assignment in env):
+        return outside_code(CONFIG_OVERRIDE)
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in GIT_OPTIONS_WITH_VALUE else 1
+        option, value = args[i], None
+        if option.startswith("--config-env="):
+            option, value = "--config-env", option.split("=", 1)[1]
+            i += 1
+        elif option in GIT_OPTIONS_WITH_VALUE:
+            value = args[i + 1] if i + 1 < len(args) else ""
+            i += 2
+        else:
+            i += 1
+        # Checked for every subcommand, since an alias can hide which one runs.
+        if option in ("-c", "--config-env") and redirecting_key(value.split("=", 1)[0]):
+            return outside_code(CONFIG_OVERRIDE)
     if i >= len(args):
         return None
     subcommand, rest = args[i], args[i + 1:]
@@ -301,6 +419,12 @@ def git_reason(args):
         if subcommand == "remote" and words[:1] == ["update"]:
             if not words[1:] or any(remote != "origin" for remote in words[1:]):
                 return outside_code("`git remote update` from a remote other than `origin`")
+        if subcommand == "remote" and words[:1] == ["set-url"]:
+            return outside_code("`git remote set-url`")
+        if subcommand == "remote" and words[:1] == ["rename"] and "origin" in words[2:]:
+            return outside_code("`git remote rename` onto `origin`")
+    elif subcommand == "config":
+        return config_reason(rest)
     return None
 
 
@@ -311,10 +435,17 @@ def pip_reason(args):
 
 
 def package_reason(name, args):
+    if name == "yarnpkg":
+        name = "yarn"
     if name in NODE_PACKAGE_ADD:
         for word in args:
             if not word.startswith("-") and word in NODE_PACKAGE_ADD[name]:
                 return outside_code("`%s %s`" % (name, word))
+        if name in NODE_INSTALL_OPTIONS_WITH_VALUE:
+            words = positional_words(args, *NODE_INSTALL_OPTIONS_WITH_VALUE[name])
+            for j, word in enumerate(words):
+                if word in ("install", "i") and words[j + 1:]:
+                    return outside_code("`%s %s` with a package name" % (name, word))
     elif name == "go":
         if positional_words(args, {"--C"}, "C")[:1] == ["get"]:
             return outside_code("`go get`")
@@ -356,13 +487,18 @@ def python_reason(args):
     return None
 
 
-def program_reason(name, args):
+def program_reason(name, args, env):
     if name in NETWORK_TOOLS:
         return "`%s` is not allowed in agent shells because new network calls need review." % name
     if name == "rm":
         return rm_reason(args)
     if name == "git":
-        return git_reason(args)
+        return git_reason(args, env)
+    if name in EXPORTS:
+        # Exported variables reach every later git command in this shell.
+        if any(env_override(arg, True) for arg in args if not arg.startswith("-")):
+            return outside_code(CONFIG_OVERRIDE)
+        return None
     if PIP.match(name):
         return pip_reason(args)
     if PYTHON.match(name):
@@ -370,10 +506,11 @@ def program_reason(name, args):
     return package_reason(name, args)
 
 
-def segment_reason(words, depth):
+def segment_reason(words, depth, env=()):
+    """env holds the VAR=value assignments that an enclosing command passes down."""
     for word in words:
         for inner in substitutions(word):
-            reason = command_reason(inner, depth + 1)
+            reason = command_reason(inner, depth + 1, env)
             if reason:
                 return reason
 
@@ -389,27 +526,35 @@ def segment_reason(words, depth):
             i = skip_wrapper(name, words, i + 1)
         else:
             break
+    assignments = [word for word in words[:i] if ASSIGNMENT.match(word)]
     if i >= len(words):
+        # Assignments without a command stay set for the rest of the shell.
+        if any(env_override(assignment, True) for assignment in assignments):
+            return outside_code(CONFIG_OVERRIDE)
         return None
+    # GIT_CONFIG_* only configure git, which any program can run.
+    if any(env_override(assignment, False) for assignment in assignments):
+        return outside_code(CONFIG_OVERRIDE)
+    env = tuple(env) + tuple(assignments)
 
     name = os.path.basename(words[i])
     args = words[i + 1:]
     if name in SHELLS:
         script = shell_command_string(args)
-        return command_reason(script, depth + 1) if script else None
+        return command_reason(script, depth + 1, env) if script else None
     if name == "eval":
-        return command_reason(" ".join(args), depth + 1)
+        return command_reason(" ".join(args), depth + 1, env)
     if name == "find":
         for j, arg in enumerate(args):
             if arg in ("-exec", "-execdir", "-ok", "-okdir"):
-                reason = segment_reason(args[j + 1:], depth + 1)
+                reason = segment_reason(args[j + 1:], depth + 1, env)
                 if reason:
                     return reason
         return None
-    return program_reason(name, args)
+    return program_reason(name, args, env)
 
 
-def command_reason(command, depth=0):
+def command_reason(command, depth=0, env=()):
     if depth > MAX_DEPTH:
         raise ParseError("command nesting is too deep to check")
     try:
@@ -422,12 +567,12 @@ def command_reason(command, depth=0):
             except ValueError:
                 line_tokens = naive_tokenize(line)
             for words in segments(line_tokens):
-                reason = segment_reason(words, depth)
+                reason = segment_reason(words, depth, env)
                 if reason:
                     return reason
         return None
     for words in segments(tokens):
-        reason = segment_reason(words, depth)
+        reason = segment_reason(words, depth, env)
         if reason:
             return reason
     return None
