@@ -1,0 +1,27 @@
+---
+description: C conventions for the sigrelay library, daemon and tests
+globs: src/**,include/**,tests/**
+alwaysApply: false
+---
+
+# sigrelay C conventions
+
+## Buffers
+- Pass buffers as a pointer plus a length (`const uint8_t *buf, size_t len` or `sigrelay_str`). Never rely on NUL termination of wire data and never read past `len`.
+- Every read from a buffer is preceded by a bounds check against the remaining length, not the total length.
+- No variable-length arrays (VLAs). Use fixed-size arrays with explicit capacity constants or caller-provided buffers.
+
+## Errors
+- Return explicit status enums (`sigrelay_sip_status`, `sigrelay_diam_status`, `sigrelay_relay_status`). Do not signal errors with magic values, `errno` or partially filled outputs.
+- Write output parameters only on success.
+- Every new error code gets a `*_strerror` entry.
+
+## Lengths from the wire
+- No unchecked arithmetic on lengths, offsets or counts read from the wire (SIP Content-Length, CSeq, Diameter 24-bit message and AVP lengths, AVP padding).
+- Check before you add or multiply: compare against the remaining space (`len > remaining`) instead of computing `offset + len` and comparing afterwards.
+- Parse decimal numbers with an explicit maximum and overflow check; never use `atoi`, `strtol` without end and range checks, or `sscanf` on wire data.
+
+## Tests
+- Every parser change ships with a malformed-input test: truncated buffers, oversized and undersized length fields, invalid characters, and boundary values.
+- Add new test cases to `tests/test_list.h`; each entry becomes its own ctest test.
+- Never weaken, skip or delete a test to make CI pass. Quarantine only through the triage process.

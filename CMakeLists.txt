@@ -16,6 +16,9 @@ add_compile_options(-Wall -Wextra)
 
 add_library(sigrelay STATIC
   src/sigrelay.c
+  src/sip_parser.c
+  src/diameter_parser.c
+  src/relay.c
 )
 target_include_directories(sigrelay
   PUBLIC
@@ -26,3 +29,9 @@ add_executable(sigrelayd
   src/main.c
 )
 target_link_libraries(sigrelayd PRIVATE sigrelay)
+
+option(SIGRELAY_BUILD_TESTS "Build the sigrelay test suite" ON)
+if(SIGRELAY_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

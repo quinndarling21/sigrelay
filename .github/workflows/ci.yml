@@ -1,0 +1,122 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc clang python3
+
+      - name: Build with clang (warnings are errors)
+        run: |
+          cmake -S . -B build-clang -DCMAKE_C_COMPILER=clang -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build build-clang --parallel
+
+      - name: Build with gcc (warnings are errors)
+        run: |
+          cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build build --parallel
+
+      - name: Run tests
+        run: |
+          ctest --test-dir build -LE quarantine --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/ctest-junit.xml"
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ctest-junit
+          path: ctest-junit.xml
+
+  cppcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck python3
+          cppcheck --version
+
+      # cppcheck added --output-format=sarif in 2.16, but Ubuntu 24.04 (this
+      # runner and the agent environment in .cursor/environment.json) ships
+      # 2.13 without it. CI keeps the apt build so findings reproduce exactly
+      # where agents triage them, writes cppcheck's XML report, and converts it
+      # with tools/cppcheck_xml_to_sarif.py.
+      - name: Run cppcheck
+        run: |
+          status=0
+          cppcheck --std=c11 --language=c -I include \
+            --enable=warning,style,performance,portability --check-level=exhaustive \
+            --inline-suppr --error-exitcode=1 \
+            --xml --output-file=cppcheck.xml \
+            src include || status=$?
+          python3 tools/cppcheck_xml_to_sarif.py cppcheck.xml cppcheck.sarif || status=1
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=cppcheck::cppcheck reported findings (listed above); fix them or add a justified inline suppression"
+            exit 1
+          fi
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cppcheck-sarif
+          path: cppcheck.sarif
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang clang-tidy python3
+          clang-tidy --version
+
+      - name: Generate compile_commands.json
+        run: cmake -S . -B build -DCMAKE_C_COMPILER=clang -DSIGRELAY_BUILD_TESTS=OFF
+
+      # Checks come from .clang-tidy, which treats every finding as an error.
+      - name: Run clang-tidy
+        run: |
+          status=0
+          clang-tidy -p build --quiet src/*.c > clang-tidy.log 2>&1 || status=$?
+          cat clang-tidy.log
+          version="$(clang-tidy --version | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+          python3 tools/clang_tidy_to_sarif.py clang-tidy.log clang-tidy.sarif \
+            --tool-version "$version" || status=1
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=clang-tidy::clang-tidy reported findings (listed above); fix them or add a justified NOLINT"
+            exit 1
+          fi
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-sarif
+          path: clang-tidy.sarif
