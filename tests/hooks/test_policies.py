@@ -98,6 +98,7 @@ class ShellPolicyTest(DecisionAssertions):
         "bash -c 'curl https://example.com'",
         'sh -c "rm -rf /tmp/build"',
         "bash -lc 'git push -f'",
+        "git -c alias.x='!curl https://example.com' x",
         "eval curl https://example.com",
         "find . -name '*.o' -exec rm -rf {} +",
         "cat <<'EOF' > notes.txt\nit's a note\nEOF\ncurl https://example.com",
@@ -285,7 +286,35 @@ class ShellPolicyTest(DecisionAssertions):
         "git --config-env=url.https://example.com/.insteadOf=BASE_URL fetch origin",
         "git -c remote.origin.url=../lib remote update origin",
         "git -c url.https://example.com/.insteadOf=https://github.com/ submodule update --init",
+        "git -c submodule.lib.url=https://example.com/lib.git submodule update --init",
+        "git -c Submodule.Lib.URL=../lib fetch origin",
+        "git --config-env submodule.lib.url=LIB_URL submodule update --init",
+        "git config submodule.lib.url https://example.com/lib.git",
+        "git config Submodule.Lib.URL ../lib",
+        "git config --file .gitmodules submodule.lib.url https://example.com/lib.git",
+        "git config set submodule.lib.url ../lib",
+        "git config --add submodule.third_party/lib.url https://example.com/lib.git",
+        "git submodule set-url lib https://example.com/lib.git",
+        "git submodule --quiet set-url third_party/lib ../lib",
+        "git -C /tmp/repo submodule set-url lib ../lib",
         "git -c alias.sync=fetch -c remote.origin.url=../lib sync origin",
+        "git -c alias.x=config x remote.origin.url https://example.com/lib.git",
+        "git -c alias.X=config x remote.origin.url https://example.com/lib.git",
+        "git -c alias.x='remote set-url' x origin https://example.com/lib.git",
+        "git -c alias.x='submodule set-url' x lib https://example.com/lib.git",
+        "git -c alias.y=x -c alias.x=config y remote.origin.url https://example.com/lib.git",
+        "git -c alias.config=status config remote.origin.url https://example.com/lib.git",
+        "git -c alias.x='-c remote.origin.url=https://example.com/lib.git fetch' x origin",
+        "git -c alias.x='!git config remote.origin.url https://example.com/lib.git' x",
+        "git -c alias.x='!git' x config remote.origin.url https://example.com/lib.git",
+        "git -c alias.x='!git config' x remote.origin.url https://example.com/lib.git",
+        "git -c alias.x='!git \"$@\"' x config remote.origin.url https://example.com/lib.git",
+        "git --config-env=alias.x=ALIAS_BODY x remote.origin.url https://example.com/lib.git",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=config "
+        "git x remote.origin.url https://example.com/lib.git",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=submodule.lib.url "
+        "GIT_CONFIG_VALUE_0=https://example.com/lib.git git submodule update --init",
+        "GIT_CONFIG_PARAMETERS=\"'alias.x=remote set-url'\" git x origin https://example.com/lib.git",
         "git -c \"$KEY=$VALUE\" fetch origin",
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0=../lib "
         "git fetch origin",
@@ -460,6 +489,18 @@ class ShellPolicyTest(DecisionAssertions):
         "git remote update origin",
         "git submodule status",
         "git submodule update --init",
+        "git submodule set-branch --branch main lib",
+        "git -c submodule.recurse=true fetch origin",
+        "git -c alias.st=status st",
+        "git -c alias.sync=fetch sync origin",
+        "git -c alias.x=config x --get remote.origin.url",
+        "git -c alias.x=config x user.email ci@example.com",
+        "git -c alias.fetch='config remote.origin.url https://example.com/lib.git' fetch origin",
+        "git -c alias.status='config remote.origin.url https://example.com/lib.git' status",
+        "git -c alias.config=status Config --get user.email",
+        "git config submodule.lib.active true",
+        "git config --get submodule.lib.url",
+        "git config submodule.lib.url",
         "git log --grep 'git clone'",
         'git commit -m "Deny git clone, npm install and cargo add"',
         "grep -rn 'npm install' .github/",
@@ -612,8 +653,12 @@ class ShellPolicyTest(DecisionAssertions):
         self.assertIn("config override", shell("HOME=/tmp/home git fetch")["user_message"])
         self.assertIn("`git remote set-url`",
                       shell("git remote set-url origin ../lib")["user_message"])
+        self.assertIn("`git submodule set-url`",
+                      shell("git submodule set-url lib ../lib")["user_message"])
         self.assertIn("`git config` write",
                       shell("git config remote.origin.url ../lib")["user_message"])
+        self.assertIn("`git config` write",
+                      shell("git -c alias.x=config x remote.origin.url ../lib")["user_message"])
         self.assertIn("`pnpm i` with a package name", shell("pnpm i zod")["user_message"])
         self.assertIn("`gh repo clone`", shell("gh repo clone cli/cli")["user_message"])
         self.assertIn("`gh release download`", shell("gh release download v1")["user_message"])

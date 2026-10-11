@@ -113,15 +113,51 @@ NODE_INSTALL_OPTIONS_WITH_VALUE = {
 }
 
 # Config that decides where git fetches from: -c, --config-env and GIT_CONFIG_*
-# overrides of any key in these sections are denied.
-REDIRECTING_CONFIG = re.compile(r"^(remote|url|include|includeif)\.", re.IGNORECASE)
+# overrides of any key in these sections, or of a submodule URL, are denied.
+# Other submodule.* keys (recurse, active, branch) do not choose the repository.
+REDIRECTING_CONFIG = re.compile(
+    r"^(remote|url|include|includeif)\.|submodule\..+\.url$", re.IGNORECASE)
 REDIRECTING_SECTION = re.compile(r"^(remote|url|include|includeif)(\.|$)", re.IGNORECASE)
 # Keys that git config may not write.
 RETARGETING_CONFIG = re.compile(
-    r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|include\.path|includeif\..+)$",
+    r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|include\.path|"
+    r"includeif\..+|submodule\..+\.url)$",
     re.IGNORECASE)
+# alias.<name> is case-insensitive as a config key. The command git runs is not:
+# `git config` is the builtin, while `git Config` is the alias.
+ALIAS_KEY = re.compile(r"^alias\.(.+)$", re.IGNORECASE)
+# git will not expand an alias whose name is one of these, so expansion stops.
+# Optional helpers such as git-lfs are omitted: where they are not installed the
+# alias runs, and treating the name as reserved would miss that.
+GIT_COMMANDS = frozenset("""
+add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr
+check-ignore check-mailmap checkout checkout-index checkout--worker check-ref-format
+cherry cherry-pick clean clone column commit commit-graph commit-tree config
+count-objects credential credential-cache credential-cache--daemon credential-store
+daemon describe diagnose diff diff-files diff-index difftool difftool--helper diff-tree
+fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref
+for-each-repo format-patch fsck fsck-objects fsmonitor--daemon gc get-tar-commit-id grep
+hash-object help hook http-backend http-fetch http-push imap-send index-pack init
+init-db instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit
+maintenance merge merge-base merge-file merge-index merge-octopus merge-one-file
+merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-resolve
+merge-subtree mergetool merge-tree mktag mktree multi-pack-index mv name-rev notes
+pack-objects pack-redundant pack-refs patch-id pickaxe prune prune-packed pull push
+quiltimport range-diff read-tree rebase receive-pack reflog remote remote-ext remote-fd
+remote-ftp remote-ftps remote-http remote-https repack replace request-pull rerere reset
+restore revert rev-list rev-parse rm send-pack shell sh-i18n--envsubst shortlog show
+show-branch show-index show-ref sparse-checkout stage stash status stripspace submodule
+submodule--helper subtree switch symbolic-ref tag unpack-file unpack-objects update-index
+update-ref update-server-info upload-archive upload-archive--writer upload-pack var
+verify-commit verify-pack verify-tag version web--browse whatchanged worktree write-tree
+""".split())
+# Positional parameters inside a !alias. git appends the typed arguments either
+# way, as "$@" through the shell or as argv after a single word.
+SHELL_POSITIONAL = re.compile(
+    r'"\$([1-9]\d*)"|\$\{([1-9]\d*)\}|\$([1-9]\d*)|"\$@"|"\$\*"|\$@|\$\*')
 GIT_CONFIG_FILE_ENV = {"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}
-GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_\d+$")
+GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_(\d+)$")
+GIT_CONFIG_VALUE_ENV = re.compile(r"^GIT_CONFIG_VALUE_(\d+)$")
 # These decide where git finds ~/.gitconfig and $XDG_CONFIG_HOME/git/config.
 CONFIG_HOME_ENV = {"HOME", "XDG_CONFIG_HOME"}
 EXPORTS = {"export", "declare", "typeset", "readonly", "local"}
@@ -144,10 +180,11 @@ GRAPHQL_LOGIN = re.compile(r'\blogin\s*:\s*(?:"([^"]*)"|\$(\w+))')
 
 OUTSIDE_CODE = ("new outside code (dependencies, repositories, remotes) needs human review "
                 "before it enters this repository.")
-CONFIG_OVERRIDE = ("A git config override of `remote.*`, `url.*`, `include.*`, `includeIf.*` or "
-                   "the config file location")
+CONFIG_OVERRIDE = ("A git config override of `remote.*`, `url.*`, `include.*`, `includeIf.*`, "
+                   "`submodule.*.url` or the config file location")
 CONFIG_WRITE = ("A `git config` write to `remote.*.url`, `remote.*.pushurl`, `url.*.insteadOf`, "
-                "`url.*.pushInsteadOf`, `include.path` or `includeIf.*`")
+                "`url.*.pushInsteadOf`, `include.path`, `includeIf.*` or `submodule.*.url`")
+ALIAS_OPAQUE = "a `git` alias whose expansion cannot be checked"
 GH_OTHER_REPO = "`gh` aimed at a repository other than `%s`" % OUR_REPO
 GH_OTHER_HOST = "`gh` aimed at a host other than `github.com`"
 
@@ -417,9 +454,111 @@ def config_reason(args):
     return None
 
 
-def git_reason(args, env=()):
-    if any(env_override(assignment, True) for assignment in env):
-        return outside_code(CONFIG_OVERRIDE)
+def remember_alias(aliases, key, body):
+    match = ALIAS_KEY.match(key)
+    if match:
+        aliases[match.group(1).lower()] = body
+
+
+def aliases_from_env(env):
+    """alias.* overrides carried by GIT_CONFIG_KEY_n / GIT_CONFIG_PARAMETERS.
+
+    A key with no value is kept as None: the body is not visible, so it cannot
+    be checked. Command-line -c is applied later and overrides these.
+    """
+    aliases = {}
+    keys = {}
+    values = {}
+    for assignment in env:
+        name, sep, value = assignment.partition("=")
+        if not sep:
+            continue
+        key_match = GIT_CONFIG_KEY_ENV.match(name)
+        value_match = GIT_CONFIG_VALUE_ENV.match(name)
+        if key_match:
+            keys[key_match.group(1)] = value
+        elif value_match:
+            values[value_match.group(1)] = value
+        elif name == "GIT_CONFIG_PARAMETERS":
+            try:
+                entries = shlex.split(value)
+            except ValueError:
+                continue  # env_override already denies an unparseable list
+            for entry in entries:
+                key, entry_sep, body = entry.partition("=")
+                if entry_sep:
+                    remember_alias(aliases, key, body)
+    for index, key in keys.items():
+        remember_alias(aliases, key, values.get(index))
+    return aliases
+
+
+def shell_alias_reason(script, rest, env, depth):
+    """A !alias runs `script` with the typed arguments appended (as "$@" in a shell)."""
+    if rest:
+        quoted = " ".join(shlex.quote(word) for word in rest)
+        used = []
+
+        def replace(match):
+            used.append(True)
+            number = next((group for group in match.groups() if group), None)
+            if number is None:
+                return quoted
+            index = int(number) - 1
+            return shlex.quote(rest[index]) if 0 <= index < len(rest) else ""
+
+        script = SHELL_POSITIONAL.sub(replace, script)
+        # No positional reference: git still appends the arguments.
+        if not used:
+            script = "%s %s" % (script, quoted)
+    return command_reason(script, depth + 1, env)
+
+
+def expanded_alias_reason(aliases, subcommand, rest, env, depth):
+    """Reason the command is denied once alias.* overrides are expanded.
+
+    None means this invocation is not an alias git would run, or the expansion
+    is allowed. The caller still checks the typed command: an alias cannot hide
+    `git fetch` or `git config`, because git ignores those aliases.
+    """
+    seen = set()
+    while True:
+        key = subcommand.lower()
+        if subcommand in GIT_COMMANDS or key not in aliases:
+            if not seen:
+                return None
+            return git_subcommand_reason(subcommand, rest)
+        if key in seen or len(seen) >= MAX_DEPTH:
+            raise ParseError("command nesting is too deep to check")
+        seen.add(key)
+        body = aliases[key]
+        if body is None:
+            return outside_code(ALIAS_OPAQUE)
+        if body.startswith("!"):
+            return shell_alias_reason(body[1:], rest, env, depth)
+        try:
+            words = shlex.split(body)
+        except ValueError:
+            return outside_code(ALIAS_OPAQUE)
+        if not words:
+            return None
+        # An alias may start with options (`-c remote.origin.url=... fetch`).
+        if words[0].startswith("-"):
+            reduced = {name: value for name, value in aliases.items() if name not in seen}
+            return git_reason(words + list(rest), env, depth + 1, reduced)
+        rest = words[1:] + list(rest)
+        subcommand = words[0]
+
+
+def git_reason(args, env=(), depth=0, aliases=None):
+    if depth > MAX_DEPTH:
+        raise ParseError("command nesting is too deep to check")
+    if aliases is None:
+        if any(env_override(assignment, True) for assignment in env):
+            return outside_code(CONFIG_OVERRIDE)
+        aliases = aliases_from_env(env)
+    else:
+        aliases = dict(aliases)
     i = 0
     while i < len(args) and args[i].startswith("-"):
         option, value = args[i], None
@@ -432,11 +571,24 @@ def git_reason(args, env=()):
         else:
             i += 1
         # Checked for every subcommand, since an alias can hide which one runs.
-        if option in ("-c", "--config-env") and redirecting_key(value.split("=", 1)[0]):
-            return outside_code(CONFIG_OVERRIDE)
+        if option in ("-c", "--config-env"):
+            key, sep, body = value.partition("=")
+            if redirecting_key(key):
+                return outside_code(CONFIG_OVERRIDE)
+            # --config-env names an environment variable, not the alias body.
+            match = ALIAS_KEY.match(key) if sep else None
+            if match:
+                aliases[match.group(1).lower()] = None if option == "--config-env" else body
     if i >= len(args):
         return None
     subcommand, rest = args[i], args[i + 1:]
+    reason = expanded_alias_reason(aliases, subcommand, rest, env, depth)
+    if reason:
+        return reason
+    return git_subcommand_reason(subcommand, rest)
+
+
+def git_subcommand_reason(subcommand, rest):
     if subcommand == "push":
         for arg in rest:
             name = arg[2:].split("=", 1)[0] if arg.startswith("--") else None
@@ -467,8 +619,8 @@ def git_reason(args, env=()):
         if subcommand == "remote" and words[:1] == ["update"]:
             if not words[1:] or any(remote != "origin" for remote in words[1:]):
                 return outside_code("`git remote update` from a remote other than `origin`")
-        if subcommand == "remote" and words[:1] == ["set-url"]:
-            return outside_code("`git remote set-url`")
+        if words[:1] == ["set-url"]:
+            return outside_code("`git %s set-url`" % subcommand)
         if subcommand == "remote" and words[:1] == ["rename"] and "origin" in words[2:]:
             return outside_code("`git remote rename` onto `origin`")
     elif subcommand == "config":
