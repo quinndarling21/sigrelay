@@ -118,6 +118,9 @@ sigrelay_relay_status sigrelay_route_lookup(const sigrelay_route_table *table,
     if (!valid_name(destination, destination_len)) {
         return SIGRELAY_RELAY_ERR_INVALID_NAME;
     }
+    if (table != NULL && table->count == 0) {
+        return SIGRELAY_RELAY_ERR_NOT_FOUND;
+    }
 
     while (start < destination_len) {
         const sigrelay_route *route =

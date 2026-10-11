@@ -171,6 +171,25 @@ void test_sip_parses_compact_headers(void)
     TEST_ASSERT_EQ(0, msg.content_length);
 }
 
+void test_sip_parses_multi_value_via(void)
+{
+    static const char response[] =
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP pcscf.example.org:5060;branch=z9hG4bK776asdhds, "
+        "SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bKnashds8\r\n"
+        "To: <sip:bob@ims.example.net>;tag=a6c85cf\r\n"
+        "From: <sip:alice@example.org>;tag=1928301774\r\n"
+        "Call-ID: a84b4c76e66710@pcscf.example.org\r\n"
+        "CSeq: 314159 INVITE\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    sigrelay_sip_message msg;
+
+    /* One Via line may carry several comma-separated values; the first is the topmost. */
+    TEST_ASSERT_EQ(SIGRELAY_SIP_OK, sigrelay_sip_parse(response, sizeof(response) - 1, &msg));
+    TEST_ASSERT_STR("SIP/2.0/UDP pcscf.example.org:5060;branch=z9hG4bK776asdhds", msg.via);
+}
+
 void test_sip_rejects_malformed_start_line(void)
 {
     static const sip_case cases[] = {
