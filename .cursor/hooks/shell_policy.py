@@ -15,8 +15,9 @@ with a blocked command is denied.
 Variable assignments in front of a command (VAR=x cmd, env VAR=x cmd) are passed
 into bash -c / eval / find -exec, so they are checked where they reach git.
 
-A command run by xargs is checked with one more argument that no rule accepts, since
-xargs adds arguments from its input that the hook cannot see.
+xargs adds arguments from its input that the hook cannot see, so it may not run gh, git
+or deno, whose rules depend on their arguments; any other command it runs is checked
+with one more argument that no rule accepts.
 """
 import json
 import os
@@ -162,8 +163,9 @@ GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 # These decide where git finds ~/.gitconfig and $XDG_CONFIG_HOME/git/config.
 CONFIG_HOME_ENV = {"HOME", "XDG_CONFIG_HOME"}
 EXPORTS = {"export", "declare", "typeset", "readonly", "local"}
-# Stands in for the words xargs appends from its input, which a rule cannot see: it is
-# not a gh command, not origin, and an expansion for git config.
+# Programs xargs may not run, and a stand-in for the words xargs appends from its input
+# when it runs any other program (pnpm install then has a package name).
+XARGS_DENIED = {"gh", "git", "deno"}
 XARGS_INPUT = "$(xargs input)"
 
 OUR_REPO = "quinndarling21/sigrelay"
@@ -944,6 +946,9 @@ def segment_reason(words, depth, env=()):
                 if reason:
                     return reason
         return None
+    if xargs and name in XARGS_DENIED:
+        return outside_code("`xargs %s` (its input supplies arguments that cannot be checked)"
+                            % name)
     return program_reason(name, args + [XARGS_INPUT] if xargs else args, env)
 
 

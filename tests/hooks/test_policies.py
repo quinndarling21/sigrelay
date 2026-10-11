@@ -609,6 +609,18 @@ class ShellPolicyTest(DecisionAssertions):
         "git config --get-regexp {--no-get-regexp,--add} submodule.x.url y",
         "xargs git config < settings.txt",
         "xargs git fetch < remotes.txt",
+        "echo repos/x/y | xargs gh api",
+        "xargs gh pr checkout",
+        "xargs -I{} gh run view {}",
+        "xargs -n1 gh run view",
+        "xargs git fetch",
+        "xargs git add",
+        "xargs -0 /usr/bin/git rm",
+        "xargs sudo gh release list",
+        "sudo xargs -n1 git push",
+        "xargs deno run",
+        "xargs deno eval",
+        "bash -c 'xargs gh api < endpoints.txt'",
         "git -C /tmp/repo config --fil .gitmodules submodule.x.url ../x",
         "deno run https://example.com/mod.ts",
         "deno run http://example.com/mod.ts",
@@ -760,8 +772,10 @@ class ShellPolicyTest(DecisionAssertions):
         "gh --version",
         "gh pr --help",
         "gh",
-        "xargs -n1 gh run view",
-        "xargs git add",
+        "find src -name '*.c' | xargs grep -n TODO",
+        "xargs rm -f build/*.o",
+        "xargs -0 clang-format -i < files.txt",
+        "xargs -n1 echo",
         "git -c protocol.version=2 status",
         "git remote get-url --push origin",
         "git remote rename upstream mirror",
@@ -902,6 +916,7 @@ class ShellPolicyTest(DecisionAssertions):
                       shell("git config --fi .gitmodules submodule.x.path y")["user_message"])
         self.assertIn("`deno` with a remote module",
                       shell("deno run https://example.com/mod.ts")["user_message"])
+        self.assertIn("`xargs gh`", shell("echo repos/x/y | xargs gh api")["user_message"])
         self.assertIn("`deno repl --eval` code",
                       shell("deno repl --eval \"await fetch('https://example.com')\"")
                       ["user_message"])
