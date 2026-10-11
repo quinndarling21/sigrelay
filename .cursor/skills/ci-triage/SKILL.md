@@ -111,46 +111,59 @@ Build the failing commit with gcc, as the build-and-test job does, in a worktree
 ```bash
 #!/usr/bin/env bash
 # Usage: rerun.sh <commit> <test name> <work dir> [extra ctest arguments]
-# Prints "<passes>/20 passed", or "rerun failed: <reason>" and exits 1.
+# Prints "<passes>/<attempts that ran> passed", plus the count and reason of any attempts
+# that did not run; or "did not run: <reason>" and exits 1 when no attempt ran.
 sha=$1 name=$2 work=$3
 shift 3
 tree=$work/checkout
 logs=$work/reruns
 
-fail() {
+not_run() {
   if [ -n "${2:-}" ]; then tail -n 20 "$2" >&2; fi
-  echo "rerun failed: $1"
+  echo "did not run: $1"
   exit 1
 }
 
-[[ $sha =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit '$sha'"
-[[ $name =~ ^[a-z0-9_]+$ ]] || fail "invalid test name '$name'"
-mkdir -p "$logs" || fail "cannot create $logs"
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || not_run "invalid commit '$sha'"
+[[ $name =~ ^[a-z0-9_]+$ ]] || not_run "invalid test name '$name'"
+mkdir -p "$logs" || not_run "cannot create $logs"
 
 if [ ! -e "$tree" ]; then
-  git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch origin "$sha" || fail "git fetch origin $sha failed"
-  git worktree add --detach "$tree" "$sha" || fail "git worktree add failed"
+  git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch origin "$sha" || not_run "git fetch origin $sha failed"
+  git worktree add --detach "$tree" "$sha" || not_run "git worktree add failed"
 fi
-cd "$tree" || fail "cannot enter $tree"
-[ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || fail "$tree is not a git worktree"
-[ "$(git rev-parse HEAD)" = "$sha" ] || fail "$tree is not at $sha"
+cd "$tree" || not_run "cannot enter $tree"
+[ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || not_run "$tree is not a git worktree"
+[ "$(git rev-parse HEAD)" = "$sha" ] || not_run "$tree is not at $sha"
 
 cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON > "$logs/configure.log" 2>&1 \
-  || fail "configure failed" "$logs/configure.log"
-cmake --build build --parallel > "$logs/build.log" 2>&1 || fail "build failed" "$logs/build.log"
+  || not_run "configure failed" "$logs/configure.log"
+cmake --build build --parallel > "$logs/build.log" 2>&1 || not_run "build failed" "$logs/build.log"
 
-passed=0
+ran=0 passed=0
+declare -A skipped=()
 for i in $(seq 20); do
   log=$logs/$name.$i.log
   ctest --test-dir build -R "^$name\$" --output-on-failure "$@" > "$log" 2>&1
   # ctest prints "No tests were found!!!" and exits 0 when the name matches nothing.
-  grep -Eq "^1/1 Test +#[0-9]+: $name " "$log" \
-    && grep -Eq '^(0|100)% tests passed, [01] tests failed out of 1$' "$log" \
-    || fail "no matching test" "$log"
-  ! grep -q '\*\*\*Not Run' "$log" || fail "test did not start" "$log"
-  if grep -q '^100% tests passed, 0 tests failed out of 1$' "$log"; then passed=$((passed + 1)); fi
+  if ! grep -Eq "^1/1 Test +#[0-9]+: $name " "$log" \
+    || ! grep -Eq '^(0|100)% tests passed, [01] tests failed out of 1$' "$log"; then
+    reason="no matching test"
+  elif grep -q '\*\*\*Not Run' "$log"; then
+    reason="test did not start"
+  else
+    ran=$((ran + 1))
+    if grep -q '^100% tests passed, 0 tests failed out of 1$' "$log"; then passed=$((passed + 1)); fi
+    continue
+  fi
+  skipped[$reason]=$(( ${skipped[$reason]:-0} + 1 ))
+  last_log=$log
 done
-echo "$passed/20 passed"
+
+if [ "$ran" -eq 0 ]; then not_run "$(IFS=';'; echo "${!skipped[*]}")" "$last_log"; fi
+result="$passed/$ran passed"
+for reason in "${!skipped[@]}"; do result+=", ${skipped[$reason]} did not run: $reason"; done
+echo "$result"
 ```
 
 Run it from the repository checkout, once per test, with the full `<headSha>` and the ctest test name (the annotation title, for example `sip_parses_invite`, not the C function `test_sip_parses_invite`). Later tests of the same run reuse `/tmp/ci-triage-<id>/checkout`:
@@ -159,21 +172,23 @@ Run it from the repository checkout, once per test, with the full `<headSha>` an
 bash /tmp/ci-triage-<id>/rerun.sh <headSha> <name> /tmp/ci-triage-<id>
 ```
 
-Each setup step runs only if the previous one succeeded: the fetch (skipped when the commit is already local), `git worktree add`, the checks that the worktree is at `<headSha>` and that the script is inside it, the configure and the build. Each of the 20 ctest runs writes its output to `/tmp/ci-triage-<id>/reruns/<name>.<n>.log`, and the script checks there that exactly the named test ran. It stops at the first failed step or at the first run that did not execute the test, prints the end of that log, and reports `rerun failed: <reason>`, for example `rerun failed: build failed` or `rerun failed: no matching test`. It prints `<passes>/20 passed` only when all 20 runs executed the test. If it reports `no matching test`, check `<name>` against the annotation title and run it once more before falling back to the CI evidence.
+Each setup step runs only if the previous one succeeded: the fetch (skipped when the commit is already local), `git worktree add`, the checks that the worktree is at `<headSha>` and that the script is inside it, the configure and the build. If one of them fails, no attempt can run: the script prints the end of the step's log and reports `did not run: <reason>`, for example `did not run: build failed`.
 
-ctest has no default timeout here, so for a test that timed out or hung in CI append `--timeout 60` to the command (the script passes extra arguments to ctest); a hang then counts as a failure instead of stalling the loop. Put the result in the Reruns column exactly as printed, for example `4/20 passed` or `rerun failed: build failed`, and read it as follows:
+Each of the 20 ctest attempts writes its output to `/tmp/ci-triage-<id>/reruns/<name>.<n>.log`. An attempt counts only if the build succeeded and that output shows exactly the named test executed. Otherwise the attempt did not run (`no matching test`, or `test did not start` when ctest reports `***Not Run`): that is not a failure, and it is left out of the pass count. The script prints passes over the attempts that ran, for example `4/20 passed`, or `4/18 passed, 2 did not run: test did not start`. When no attempt ran, it prints the end of the last attempt's log and `did not run: <reason>`, for example `did not run: no matching test`. If it reports `no matching test`, check `<name>` against the annotation title and run it once more before falling back to the CI evidence.
 
-- Mixed (1 to 19 of 20 passed): flaky.
-- `0/20 passed`: real, a deterministic failure.
-- `20/20 passed`: the CI failure did not reproduce locally. Say so in the Reasoning and classify the test from the CI evidence (annotations, log, CI rerun) as below.
-- `rerun failed: <reason>`: the rerun shows nothing about the test. Never write it as `0/20 passed` and never classify the test as real because of it. Classify the test from the CI evidence as below and say so in the Reasoning, for example "Rerun failed (build failed); classified from the CI log."
+ctest has no default timeout here, so for a test that timed out or hung in CI append `--timeout 60` to the command (the script passes extra arguments to ctest); a hang then counts as a failure instead of stalling the loop. Put the result in the Reruns column exactly as printed, for example `4/20 passed` or `did not run: build failed`, and read it as follows, where `<n>` is the number of attempts that ran:
+
+- Mixed (some attempts that ran passed and some failed): flaky.
+- `0/<n> passed`: real, a deterministic failure.
+- `<n>/<n> passed`: the CI failure did not reproduce locally. Say so in the Reasoning and classify the test from the CI evidence (annotations, log, CI rerun) as below.
+- `did not run: <reason>`: no attempt ran, so the rerun shows nothing about the test. It is not a failure: never write it as `0/20 passed` and never classify the test as real on the basis of the rerun. Classify the test from the CI evidence as below and say so in the Reasoning, for example "Did not run (build failed); classified from the CI log."
 
 ### (b) Classification
 
 Classify each item as exactly one of:
 
 - **real**: the code or the test is wrong and must be fixed.
-- **flaky**: the result does not depend on the code. Requires evidence: a mixed result in the isolated reruns of (a); or, for a test that (a) did not rerun, that passed 20/20 there or whose rerun failed, and for a failing job, it passes when the failed jobs are rerun in CI (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the result depends on timing, ordering or the environment and you can point at that dependence. Rerun in CI at most once. A test with `0/20 passed` is never flaky.
+- **flaky**: the result does not depend on the code. Requires evidence: a mixed result in the isolated reruns of (a); or, for a test that (a) did not rerun, that passed every attempt that ran there, or that reported `did not run` there, and for a failing job, it passes when the failed jobs are rerun in CI (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the result depends on timing, ordering or the environment and you can point at that dependence. Rerun in CI at most once. A test with `0/<n> passed` is never flaky.
 - **false positive**: the tool is wrong. Requires a concrete reason the code is correct, citing the code that makes it so (`file:line` of the bounds check or invariant the analyzer did not follow).
 
 If you cannot produce the required evidence for flaky or false positive, classify the item as real.
@@ -182,7 +197,7 @@ For every item record:
 
 - **Item**: the ruleId, the test name, or the job name.
 - **Type**: `cppcheck`, `clang-tidy`, `test` or `job`.
-- **Reruns**: `<passes>/20 passed` or `rerun failed: <reason>` from (a), then `CI attempt <n> passed` or `CI attempt <n> failed` if you reran the failed jobs in CI; `none` if neither.
+- **Reruns**: `<passes>/<attempts that ran> passed` or `did not run: <reason>` from (a), as printed, then `CI attempt <n> passed` or `CI attempt <n> failed` if you reran the failed jobs in CI; `none` if neither.
 - **Cause**: `file:line` (from the annotation, the finding or test line in the log, or SARIF/JUnit) or a verbatim quoted log line.
 - **Reasoning**: one line.
 
@@ -206,7 +221,7 @@ Failing jobs: <job>, <job>
 
 | Item | Type | Classification | Reruns | Cause | Reasoning |
 | --- | --- | --- | --- | --- | --- |
-| `<item>` | <type> | <real, flaky or false positive> | <e.g. 4/20 passed, rerun failed: build failed, or none> | `<file:line>` or "<log line>" | <one line> |
+| `<item>` | <type> | <real, flaky or false positive> | <e.g. 4/20 passed, did not run: build failed, or none> | `<file:line>` or "<log line>" | <one line> |
 
 Pull requests: none yet
 ```
@@ -272,7 +287,7 @@ gh pr list --state open --search '<ruleId or test name>' --json number,title,url
    - Run `cppcheck --version` and `clang-tidy --version`. If either is missing, run `sudo apt-get install -y cppcheck clang-tidy` once; if a scanner is still missing, say so explicitly in the PR body (for example "clang-tidy not rerun locally: not installable in the agent environment") and leave that check to CI. Never skip a scanner silently.
    - Configure and build with both compilers, warnings as errors, then run `ctest -LE quarantine`.
    - Rerun the scanner that reported each item and confirm the item is gone and no new finding appears. Run both scanners whenever the change touches `src/` or `include/`, the directories they scan.
-   - For each flaky test fixed in step 6.3, commit the fix and rerun the test 20 times in isolation with the script from step 4 (a), giving it the fix commit and a work directory for that commit: `bash /tmp/ci-triage-<id>/rerun.sh "$(git rev-parse HEAD)" <name> "/tmp/ci-triage-<id>/verify-$(git rev-parse --short HEAD)"`. It must report `20/20 passed`; `rerun failed` does not count. If step 4 (a) also gave 20/20 on the failing commit, the reruns cannot show the fix: say so in the PR body and name the change that removes the nondeterminism.
+   - For each flaky test fixed in step 6.3, commit the fix and rerun the test 20 times in isolation with the script from step 4 (a), giving it the fix commit and a work directory for that commit: `bash /tmp/ci-triage-<id>/rerun.sh "$(git rev-parse HEAD)" <name> "/tmp/ci-triage-<id>/verify-$(git rev-parse --short HEAD)"`. It must report `20/20 passed`: all 20 attempts ran and passed. If step 4 (a) also gave 20/20 on the failing commit, the reruns cannot show the fix: say so in the PR body and name the change that removes the nondeterminism.
    - Put the tool versions and the results (ctest summary line, each converter's finding count, each fixed flaky test's rerun count next to its count from step 4 (a), for example "20/20 passed (4/20 on `<headSha>`)") in the PR body.
 
    The commands, as in `.github/workflows/ci.yml` (if the two differ, follow ci.yml). clang-tidy gets its own build directory here so that `build/` keeps the tests:
