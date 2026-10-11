@@ -88,7 +88,8 @@ FETCH_OPTIONS_WITH_VALUE = {
 LS_REMOTE_OPTIONS_WITH_VALUE = {"--upload-pack", "--sort", "--server-option"}
 CONFIG_OPTIONS_WITH_VALUE = {"--file", "--blob", "--type", "--default", "--comment", "--value"}
 CONFIG_SUBCOMMANDS = {"get", "list", "set", "unset", "rename-section", "remove-section", "edit"}
-CONFIG_READS = ("get", "list", "unset", "remove-section")
+CONFIG_READS = ("get", "list")
+CONFIG_REMOVALS = ("unset", "remove-section")
 CARGO_OPTIONS_WITH_VALUE = {"--color", "--config", "--explain"}
 NPM_INSTALL = {"install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
                "isntall", "add", "install-test", "it"}
@@ -112,52 +113,21 @@ NODE_INSTALL_OPTIONS_WITH_VALUE = {
               "--otp"}, ""),
 }
 
-# Config that decides where git fetches from: -c, --config-env and GIT_CONFIG_*
-# overrides of any key in these sections, or of a submodule URL, are denied.
-# Other submodule.* keys (recurse, active, branch) do not choose the repository.
+# Config that decides which repository git fetches from or which command it runs
+# (an alias can hide its subcommand; submodule.<name>.update can run any command):
+# -c, --config-env and GIT_CONFIG_* overrides of these keys are denied. Other
+# submodule.* keys (recurse, active, branch) do not choose the repository.
 REDIRECTING_CONFIG = re.compile(
-    r"^(remote|url|include|includeif)\.|submodule\..+\.url$", re.IGNORECASE)
-REDIRECTING_SECTION = re.compile(r"^(remote|url|include|includeif)(\.|$)", re.IGNORECASE)
+    r"^(remote|url|include|includeif|alias)\.|^submodule\..+\.(url|update)$", re.IGNORECASE)
+REDIRECTING_SECTION = re.compile(r"^(remote|url|include|includeif|alias|submodule)(\.|$)",
+                                 re.IGNORECASE)
 # Keys that git config may not write.
 RETARGETING_CONFIG = re.compile(
     r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|include\.path|"
-    r"includeif\..+|submodule\..+\.url)$",
+    r"includeif\..+|alias\..+|submodule\..+\.(url|update))$",
     re.IGNORECASE)
-# alias.<name> is case-insensitive as a config key. The command git runs is not:
-# `git config` is the builtin, while `git Config` is the alias.
-ALIAS_KEY = re.compile(r"^alias\.(.+)$", re.IGNORECASE)
-# git will not expand an alias whose name is one of these, so expansion stops.
-# Optional helpers such as git-lfs are omitted: where they are not installed the
-# alias runs, and treating the name as reserved would miss that.
-GIT_COMMANDS = frozenset("""
-add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr
-check-ignore check-mailmap checkout checkout-index checkout--worker check-ref-format
-cherry cherry-pick clean clone column commit commit-graph commit-tree config
-count-objects credential credential-cache credential-cache--daemon credential-store
-daemon describe diagnose diff diff-files diff-index difftool difftool--helper diff-tree
-fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref
-for-each-repo format-patch fsck fsck-objects fsmonitor--daemon gc get-tar-commit-id grep
-hash-object help hook http-backend http-fetch http-push imap-send index-pack init
-init-db instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit
-maintenance merge merge-base merge-file merge-index merge-octopus merge-one-file
-merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-resolve
-merge-subtree mergetool merge-tree mktag mktree multi-pack-index mv name-rev notes
-pack-objects pack-redundant pack-refs patch-id pickaxe prune prune-packed pull push
-quiltimport range-diff read-tree rebase receive-pack reflog remote remote-ext remote-fd
-remote-ftp remote-ftps remote-http remote-https repack replace request-pull rerere reset
-restore revert rev-list rev-parse rm send-pack shell sh-i18n--envsubst shortlog show
-show-branch show-index show-ref sparse-checkout stage stash status stripspace submodule
-submodule--helper subtree switch symbolic-ref tag unpack-file unpack-objects update-index
-update-ref update-server-info upload-archive upload-archive--writer upload-pack var
-verify-commit verify-pack verify-tag version web--browse whatchanged worktree write-tree
-""".split())
-# Positional parameters inside a !alias. git appends the typed arguments either
-# way, as "$@" through the shell or as argv after a single word.
-SHELL_POSITIONAL = re.compile(
-    r'"\$([1-9]\d*)"|\$\{([1-9]\d*)\}|\$([1-9]\d*)|"\$@"|"\$\*"|\$@|\$\*')
 GIT_CONFIG_FILE_ENV = {"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}
-GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_(\d+)$")
-GIT_CONFIG_VALUE_ENV = re.compile(r"^GIT_CONFIG_VALUE_(\d+)$")
+GIT_CONFIG_KEY_ENV = re.compile(r"^GIT_CONFIG_KEY_\d+$")
 # These decide where git finds ~/.gitconfig and $XDG_CONFIG_HOME/git/config.
 CONFIG_HOME_ENV = {"HOME", "XDG_CONFIG_HOME"}
 EXPORTS = {"export", "declare", "typeset", "readonly", "local"}
@@ -173,18 +143,19 @@ GITHUB_URL = re.compile(r"(?:^|[^\w.-])(?:www\.)?github\.com[/:]([\w.-]+)/([\w.-
 GH_API_HOST = re.compile(r"^https?://api\.github\.com(?=/|$)", re.IGNORECASE)
 GH_API_OPTIONS_WITH_VALUE = {"--cache", "--field", "--header", "--hostname", "--input", "--jq",
                              "--method", "--preview", "--raw-field", "--template"}
-# GraphQL lookups whose target repository cannot be read from the query.
-GRAPHQL_LOOKUP = re.compile(r"\b(node|nodes|search)\s*\(")
-GRAPHQL_REPOSITORY = re.compile(r"\brepository\s*\(([^)]*)\)")
-GRAPHQL_LOGIN = re.compile(r'\blogin\s*:\s*(?:"([^"]*)"|\$(\w+))')
+# gh options that take a value in every gh command (checked against `gh help
+# reference`), so the word after one is its value even when it looks like -R.
+GH_OPTIONS_WITH_VALUE = {"--title", "--body", "--notes", "--subject", "--search", "--jq",
+                         "--header", "--raw-field", "--description", "-b"}
 
 OUTSIDE_CODE = ("new outside code (dependencies, repositories, remotes) needs human review "
                 "before it enters this repository.")
 CONFIG_OVERRIDE = ("A git config override of `remote.*`, `url.*`, `include.*`, `includeIf.*`, "
-                   "`submodule.*.url` or the config file location")
+                   "`alias.*`, `submodule.*.url`, `submodule.*.update` or the config file "
+                   "location")
 CONFIG_WRITE = ("A `git config` write to `remote.*.url`, `remote.*.pushurl`, `url.*.insteadOf`, "
-                "`url.*.pushInsteadOf`, `include.path`, `includeIf.*` or `submodule.*.url`")
-ALIAS_OPAQUE = "a `git` alias whose expansion cannot be checked"
+                "`url.*.pushInsteadOf`, `include.path`, `includeIf.*`, `alias.*`, "
+                "`submodule.*.url`, `submodule.*.update` or `.gitmodules`")
 GH_OTHER_REPO = "`gh` aimed at a repository other than `%s`" % OUR_REPO
 GH_OTHER_HOST = "`gh` aimed at a host other than `github.com`"
 
@@ -429,11 +400,14 @@ def short_flags(args, short_with_value):
 
 
 def config_reason(args):
-    """git config may read anything, but may not write where remotes and includes point."""
+    """git config may read anything, but may not write where remotes, includes, aliases and
+    submodules point, nor write .gitmodules at all."""
     end = args.index("--") if "--" in args else len(args)
     names = [a[2:].split("=", 1)[0] for a in args[:end] if a.startswith("--")]
     flags = short_flags(args, "ft")
     words = positional_words(args, CONFIG_OPTIONS_WITH_VALUE, "ft")
+    gitmodules = any(os.path.basename(path) == ".gitmodules"
+                     for path in option_values(args, "--file", "f"))
     action = None
     if words and words[0] in CONFIG_SUBCOMMANDS:
         action, words = words[0], words[1:]
@@ -443,122 +417,23 @@ def config_reason(args):
         return outside_code("`git config --edit` (it can rewrite where remotes point)")
     if action == "rename-section" or any(len(n) >= 3 and "rename-section".startswith(n)
                                          for n in names):
-        if any(REDIRECTING_SECTION.match(w) for w in words):
+        if gitmodules or any(REDIRECTING_SECTION.match(w) for w in words):
             return outside_code(CONFIG_WRITE)
         return None
     if action in CONFIG_READS or "l" in flags or any(n.startswith(CONFIG_READS) for n in names):
         return None
+    removing = action in CONFIG_REMOVALS or any(n.startswith(CONFIG_REMOVALS) for n in names)
+    if gitmodules and (removing or len(words) >= 2):
+        return outside_code(CONFIG_WRITE)
     # A single name is a read; a name and a value (set, --add, --replace-all) is a write.
-    if len(words) >= 2 and any(RETARGETING_CONFIG.match(w) for w in words):
+    if not removing and len(words) >= 2 and any(RETARGETING_CONFIG.match(w) for w in words):
         return outside_code(CONFIG_WRITE)
     return None
 
 
-def remember_alias(aliases, key, body):
-    match = ALIAS_KEY.match(key)
-    if match:
-        aliases[match.group(1).lower()] = body
-
-
-def aliases_from_env(env):
-    """alias.* overrides carried by GIT_CONFIG_KEY_n / GIT_CONFIG_PARAMETERS.
-
-    A key with no value is kept as None: the body is not visible, so it cannot
-    be checked. Command-line -c is applied later and overrides these.
-    """
-    aliases = {}
-    keys = {}
-    values = {}
-    for assignment in env:
-        name, sep, value = assignment.partition("=")
-        if not sep:
-            continue
-        key_match = GIT_CONFIG_KEY_ENV.match(name)
-        value_match = GIT_CONFIG_VALUE_ENV.match(name)
-        if key_match:
-            keys[key_match.group(1)] = value
-        elif value_match:
-            values[value_match.group(1)] = value
-        elif name == "GIT_CONFIG_PARAMETERS":
-            try:
-                entries = shlex.split(value)
-            except ValueError:
-                continue  # env_override already denies an unparseable list
-            for entry in entries:
-                key, entry_sep, body = entry.partition("=")
-                if entry_sep:
-                    remember_alias(aliases, key, body)
-    for index, key in keys.items():
-        remember_alias(aliases, key, values.get(index))
-    return aliases
-
-
-def shell_alias_reason(script, rest, env, depth):
-    """A !alias runs `script` with the typed arguments appended (as "$@" in a shell)."""
-    if rest:
-        quoted = " ".join(shlex.quote(word) for word in rest)
-        used = []
-
-        def replace(match):
-            used.append(True)
-            number = next((group for group in match.groups() if group), None)
-            if number is None:
-                return quoted
-            index = int(number) - 1
-            return shlex.quote(rest[index]) if 0 <= index < len(rest) else ""
-
-        script = SHELL_POSITIONAL.sub(replace, script)
-        # No positional reference: git still appends the arguments.
-        if not used:
-            script = "%s %s" % (script, quoted)
-    return command_reason(script, depth + 1, env)
-
-
-def expanded_alias_reason(aliases, subcommand, rest, env, depth):
-    """Reason the command is denied once alias.* overrides are expanded.
-
-    None means this invocation is not an alias git would run, or the expansion
-    is allowed. The caller still checks the typed command: an alias cannot hide
-    `git fetch` or `git config`, because git ignores those aliases.
-    """
-    seen = set()
-    while True:
-        key = subcommand.lower()
-        if subcommand in GIT_COMMANDS or key not in aliases:
-            if not seen:
-                return None
-            return git_subcommand_reason(subcommand, rest)
-        if key in seen or len(seen) >= MAX_DEPTH:
-            raise ParseError("command nesting is too deep to check")
-        seen.add(key)
-        body = aliases[key]
-        if body is None:
-            return outside_code(ALIAS_OPAQUE)
-        if body.startswith("!"):
-            return shell_alias_reason(body[1:], rest, env, depth)
-        try:
-            words = shlex.split(body)
-        except ValueError:
-            return outside_code(ALIAS_OPAQUE)
-        if not words:
-            return None
-        # An alias may start with options (`-c remote.origin.url=... fetch`).
-        if words[0].startswith("-"):
-            reduced = {name: value for name, value in aliases.items() if name not in seen}
-            return git_reason(words + list(rest), env, depth + 1, reduced)
-        rest = words[1:] + list(rest)
-        subcommand = words[0]
-
-
-def git_reason(args, env=(), depth=0, aliases=None):
-    if depth > MAX_DEPTH:
-        raise ParseError("command nesting is too deep to check")
-    if aliases is None:
-        if any(env_override(assignment, True) for assignment in env):
-            return outside_code(CONFIG_OVERRIDE)
-        aliases = aliases_from_env(env)
-    else:
-        aliases = dict(aliases)
+def git_reason(args, env=()):
+    if any(env_override(assignment, True) for assignment in env):
+        return outside_code(CONFIG_OVERRIDE)
     i = 0
     while i < len(args) and args[i].startswith("-"):
         option, value = args[i], None
@@ -570,25 +445,12 @@ def git_reason(args, env=(), depth=0, aliases=None):
             i += 2
         else:
             i += 1
-        # Checked for every subcommand, since an alias can hide which one runs.
-        if option in ("-c", "--config-env"):
-            key, sep, body = value.partition("=")
-            if redirecting_key(key):
-                return outside_code(CONFIG_OVERRIDE)
-            # --config-env names an environment variable, not the alias body.
-            match = ALIAS_KEY.match(key) if sep else None
-            if match:
-                aliases[match.group(1).lower()] = None if option == "--config-env" else body
+        # Checked for every subcommand, since an alias in a config file can hide which one runs.
+        if option in ("-c", "--config-env") and redirecting_key(value.split("=", 1)[0]):
+            return outside_code(CONFIG_OVERRIDE)
     if i >= len(args):
         return None
     subcommand, rest = args[i], args[i + 1:]
-    reason = expanded_alias_reason(aliases, subcommand, rest, env, depth)
-    if reason:
-        return reason
-    return git_subcommand_reason(subcommand, rest)
-
-
-def git_subcommand_reason(subcommand, rest):
     if subcommand == "push":
         for arg in rest:
             name = arg[2:].split("=", 1)[0] if arg.startswith("--") else None
@@ -679,16 +541,20 @@ def is_our_repo(spec):
     return match is not None and same_repo(match.group(1), match.group(2))
 
 
-def option_values(args, long_name, short_name=""):
-    """Values of one option: --name v, --name=v, -X v, -Xv, -X=v, or -wX v in a cluster."""
+def option_values(args, long_name, short_name="", value_options=()):
+    """Values of one option: --name v, --name=v, -X v, -Xv, -X=v, or -wX v in a cluster.
+
+    The word after one of value_options is that option's value and is skipped. --
+    does not end the scan, because an option can take -- itself as its value.
+    """
     values = []
     i = 0
     while i < len(args):
         arg = args[i]
         i += 1
-        if arg == "--":
-            break
-        if arg == long_name:
+        if arg in value_options:
+            i += 1
+        elif arg == long_name:
             values.append(args[i] if i < len(args) else "")
             i += 1
         elif arg.startswith(long_name + "="):
@@ -724,37 +590,6 @@ def gh_command(args):
     return words
 
 
-def graphql_value(arguments, key, fields):
-    match = re.search(r'\b%s\s*:\s*(?:"([^"]*)"|\$(\w+))' % key, arguments)
-    if match is None:
-        return None
-    value = match.group(1) if match.group(1) is not None else fields.get(match.group(2))
-    return value.lower() if value is not None else None
-
-
-def gh_graphql_reason(args):
-    """gh api graphql may only name this repository, in a query given on the command line."""
-    fields = {}
-    for value in option_values(args, "--field", "F") + option_values(args, "--raw-field", "f"):
-        key, _, field = value.partition("=")
-        fields[key] = field
-    query = fields.get("query", "")
-    if (option_values(args, "--input") or not query or query.startswith("@")
-            or GRAPHQL_LOOKUP.search(query)):
-        return outside_code(GH_OTHER_REPO)
-    for arguments in GRAPHQL_REPOSITORY.findall(query):
-        if (graphql_value(arguments, "owner", fields) not in (OUR_OWNER, "{owner}")
-                or graphql_value(arguments, "name", fields) not in (OUR_NAME, "{repo}")):
-            return outside_code(GH_OTHER_REPO)
-    for literal, variable in GRAPHQL_LOGIN.findall(query):
-        login = literal if not variable else fields.get(variable, "")
-        if login.lower() not in (OUR_OWNER, "{owner}"):
-            return outside_code(GH_OTHER_REPO)
-    if any(not same_repo(owner, name) for owner, name in GITHUB_URL.findall(query)):
-        return outside_code(GH_OTHER_REPO)
-    return None
-
-
 def gh_api_reason(args):
     if any(host.lower() != "github.com" for host in option_values(args, "--hostname")):
         return outside_code(GH_OTHER_HOST)
@@ -771,16 +606,17 @@ def gh_api_reason(args):
             and parts[2].lower() in (OUR_NAME, "{repo}"))
     if "%" in path or "." in parts or ".." in parts:
         return outside_code(GH_OTHER_REPO)
+    # A GraphQL query can reach any repository (forks, cross-references, node IDs).
     if parts[0].lower() == "graphql":
-        return gh_graphql_reason(args)
+        return outside_code("`gh api graphql`")
     if parts[0].lower() == "repositories" or (parts[0].lower() == "repos" and not ours):
         return outside_code(GH_OTHER_REPO)
     return None
 
 
 def gh_reason(args):
-    end = args.index("--") if "--" in args else len(args)
-    if any(not is_our_repo(repo) for repo in option_values(args[:end], "--repo", "R")):
+    repos = option_values(args, "--repo", "R", GH_OPTIONS_WITH_VALUE)
+    if any(not is_our_repo(repo) for repo in repos):
         return outside_code(GH_OTHER_REPO)
     command = gh_command(args)
     path = [word for _, word in command[:2]]
@@ -791,7 +627,7 @@ def gh_reason(args):
     if path[:1] in (["extension"], ["extensions"], ["ext"]) and path[1:] == ["install"]:
         return outside_code("`gh extension install`")
     if path == ["repo", "fork"] and any(arg.split("=", 1)[0] in ("--clone", "--remote")
-                                        and not arg.endswith("=false") for arg in args[:end]):
+                                        and not arg.endswith("=false") for arg in args):
         return outside_code("`gh repo fork --clone` or `--remote`")
     if path in (["pr", "checkout"], ["pr", "diff"]):
         for arg in args:
