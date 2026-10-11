@@ -36,7 +36,7 @@ gh run view <id> --job <job databaseId> --log-failed
 
 Keep at least one verbatim log line per failing job (the first error line, such as a compiler error, `The following tests FAILED:`, a finding printed by `tools/*_to_sarif.py`, or the `::error` summary line).
 
-Download the reports. Each artifact is missing when its job stopped early (for example `ctest-junit` after a build failure); that is expected, so continue with what exists:
+Download the reports. An artifact is missing when its job stopped early (for example `ctest-junit` after a build failure), and downloads fail when the environment's network policy does not allow GitHub's artifact storage; continue with what exists:
 
 ```bash
 gh run download <id> -n cppcheck-sarif -n clang-tidy-sarif -n ctest-junit -D /tmp/ci-triage-<id> \
@@ -74,6 +74,8 @@ for path in sorted(glob.glob(root + "/**/*.xml", recursive=True)):
         print("JUNIT\t%s\t%s\t%s" % (case.get("name"), message, " | ".join(output[-5:])))
 EOF
 ```
+
+For any artifact you could not download, take its items from the failed log instead: the cppcheck and clang-tidy jobs print every SARIF result as `file:line[:col]: <severity>: <message> [<ruleId>]`, and build-and-test prints each failing test under `The following tests FAILED:` with its assertion output above it. State in the final reply which artifacts were unavailable.
 
 ## 4. Classify every item
 
