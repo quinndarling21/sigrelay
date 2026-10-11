@@ -150,7 +150,7 @@ gh pr list --head <headBranch> --state open --json number,url,baseRefName
 
 If there is no open PR, go to step 8.
 
-Otherwise post ONE comment on that PR (in Cursor Cloud Agents, the pull-request tool's `post_comment` with the PR URL; elsewhere `gh pr comment <number> --body-file <file>`). Record the comment URL. Format:
+Otherwise, check for an earlier triage of the same pull request first ("Repeat failures on the same pull request" below), then post ONE comment on that PR (in Cursor Cloud Agents, the pull-request tool's `post_comment` with the PR URL; elsewhere `gh pr comment <number> --body-file <file>`). Record the comment URL. Format:
 
 ```markdown
 ## CI triage: run <id>
@@ -167,7 +167,38 @@ Pull requests: none yet
 
 Later steps add PR links by editing this comment in place (GitHub MCP `update_issue_comment`, or `gh api --method PATCH repos/<owner>/<repo>/issues/comments/<comment id> -F body=@<file>`). Never post a second triage comment for the same run.
 
-## 6. Dispositions PR (only if there are false positives or flaky items)
+### Repeat failures on the same pull request
+
+A pull request can fail again after it was triaged, on a later push or a rerun. Before posting, list the pull request's comments and the open pull requests that may already cover its items, with read-only `gh`:
+
+```bash
+gh pr view <number> --comments
+gh api 'repos/{owner}/{repo}/issues/<number>/comments' --paginate \
+  --jq '.[] | select(.body | startswith("## CI triage: run ")) | [.id, .html_url, .created_at, (.body | split("\n")[0])] | @tsv'
+gh pr list --state open --base <headBranch> --json number,title,url,headRefName,body
+gh pr list --state open --search '"CI triage" in:title' --json number,title,url,headRefName,baseRefName,body
+gh pr list --state open --search '<ruleId or test name>' --json number,title,url,headRefName,baseRefName
+```
+
+- **Earlier triage comment.** A comment whose first line is `## CI triage: run <earlier id>` comes from this procedure; if there are several, take the latest. If it is for this same run, do not post again: edit it if your tooling supports that, otherwise leave it and report its URL. For an earlier run, the default is to post one new comment that names the run it supersedes (run ID and the run URL from the earlier comment's `Run:` line) and leads with what changed since then, followed by the usual run line and full table:
+
+  ```markdown
+  ## CI triage: run <id>
+
+  Supersedes run <earlier id> (<earlier run url>), triaged in <earlier comment url>.
+
+  Changes since run <earlier id>:
+  - New: `<item>` (<classification>)
+  - Resolved: `<item>`
+  - Reclassified: `<item>` from <old> to <new>: <why>
+
+  Run: <run url> (branch `<headBranch>`, commit `<headSha>`)
+  ```
+
+  Write `none` for an empty group. Only if your tooling supports editing comments (GitHub MCP `update_issue_comment`, or the `gh api --method PATCH` call above), edit the earlier comment in place instead, with the same content. Either way, the resulting comment is the triage comment for the later steps.
+- **Open pull request for the same finding.** Before opening a dispositions or fix PR (steps 6 and 7), check the open pull requests listed above for one that already covers the same finding: the same rule ID and `file:line`, or the same failing test (read its title, body and `gh pr diff <number>`). If one does, do not open a duplicate: link it in the triage table by ending the item's Reasoning with `Covered by <pr url>.` and list it under `Pull requests:`. Open PRs only for the items no open pull request covers.
+
+## 6. Dispositions PR (only if there are false positives or flaky items that no open pull request covers)
 
 1. Create one branch off the failing branch's current head: `git fetch origin <headBranch>` and `git checkout -b cursor/ci-triage-<id>-dispositions origin/<headBranch>`. The `cursor/` prefix makes rule 2 skip CI runs of this branch. If `origin/<headBranch>` is no longer `<headSha>`, check that each item still applies and say so in the PR body.
 2. For each false positive, add an inline suppression on the line directly above the flagged line, preceded by a justification comment:
@@ -214,7 +245,7 @@ Later steps add PR links by editing this comment in place (GitHub MCP `update_is
 
 ## 7. Fix PRs (one per real item)
 
-For each real item:
+For each real item that no open pull request covers (step 5, "Repeat failures on the same pull request"):
 
 1. Branch off the dispositions branch if step 6 created one, else off `origin/<headBranch>`: `cursor/ci-triage-<id>-fix-<short item name>`.
 2. Fix the cause. Add a regression test for it in `tests/` (registered in `tests/test_list.h`, in `tests/hooks/test_policies.py` for hook scripts, or in `tests/tools/test_annotations.py` for the report tools in `tools/`) that fails without the fix and passes with it; check both. For parser code, the test feeds the malformed or boundary input that exposed the problem. Regression tests must never depend on cppcheck or clang-tidy being installed: for a static-analysis item the test covers the behaviour the finding exposed, and CI is the gate for the analyzer result.
@@ -222,7 +253,7 @@ For each real item:
 4. Verify exactly as CI does, as in step 6.4.
 5. Open one PR per item, targeting the dispositions branch (or `<headBranch>` when there is none), titled `CI triage <id>: fix <item>`, linking the triage comment.
 
-Then edit the triage comment to replace `Pull requests: none yet` with a link to every PR you opened and the item it covers.
+Then edit the triage comment to replace `Pull requests: none yet` with a link to every PR you opened or found already open and the item it covers.
 
 ## 8. Branch without an open PR
 
@@ -239,7 +270,7 @@ Always state:
 - each failing test name;
 - which evidence sources were unavailable (annotations, logs or artifacts);
 - the classification table (Item | Type | Classification | Reruns | Cause | Reasoning);
-- the triage comment URL and PR URLs, if any.
+- the triage comment URL, the earlier run it supersedes, and PR URLs (opened or already open), if any.
 
 ## Jenkins builds
 
