@@ -1,5 +1,8 @@
 # clang-tidy configuration for src/. CI treats every finding as an error.
 #
+# HeaderFilterRegex matches only include/sigrelay, so headers of the vendored
+# zlib (vendor/zlib, also included as a SYSTEM directory) are never reported.
+#
 # Disabled checks:
 # - bugprone-easily-swappable-parameters: every parser helper takes a bounded
 #   buffer as (pointer, length, offset); the check flags each of those
