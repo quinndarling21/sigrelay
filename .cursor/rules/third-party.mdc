@@ -1,0 +1,22 @@
+---
+description: Applies to vendored third-party code under third_party/ and to requests to upgrade dependencies
+globs: third_party/**
+alwaysApply: false
+---
+
+# Third-party code
+
+Vendored libraries live in `third_party/<lib>/`; `third_party/README.md` describes the layout and lists each library and version.
+
+## Upgrading a vendored library
+- Take the source only from the official upstream release tarball, and verify its SHA-256 against the value in the upstream release announcement before copying anything.
+- Never edit vendored files. Copy them byte for byte; build differences belong in `third_party/<lib>/CMakeLists.txt`.
+- Update `third_party/<lib>/VERSION` (version, release URL, SHA-256, file list) and the table in `third_party/README.md`.
+- Confirm with `diff -r` that the copied files match the extracted tarball, then build with gcc and clang and run the full test suite.
+
+## When the release tarball cannot be obtained
+If you can't obtain the release tarball from within your environment, prepare the upgrade for a maintainer:
+- Update `third_party/<lib>/VERSION` to the target version, release URL and expected SHA-256. Take the checksum exactly as published in the upstream release announcement; never compute, guess or copy it from another source. Add the line `upgrade pending: files are still <current version>` so that VERSION does not describe files that are not there yet.
+- Add an "Upgrade pending" note for the library under "Pending upgrades" in `third_party/README.md`, saying that a maintainer should drop in the verified release tarball contents. An upstream `third_party/<lib>/README` is a vendored file and stays unmodified.
+- Explain in the pull request description what you did and why: the target version, where the expected checksum comes from, and that a maintainer has to add the verified release files to the pull request before it merges.
+- Keep the C code and build ready for the new version where that is possible without the new sources, for example adapting sigrelay's own calls to an API change. The build and the full test suite must still pass with the files currently in `third_party/<lib>/`.
