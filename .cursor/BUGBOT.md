@@ -1,6 +1,6 @@
 # Review rules for sigrelay
 
-sigrelay parses SIP and Diameter from untrusted peers. Review every change to `src/`, `include/` and `tests/` against the rules below and flag violations as bugs, not style nits.
+sigrelay parses SIP and Diameter from untrusted peers. Review every change to `src/`, `include/` and `tests/` against the rules below and flag violations as bugs, not style nits. Changes under `third_party/` follow the third-party rules at the end.
 
 ## Memory safety
 - Flag buffer overflows and over-reads: any read or write that is not preceded by a bounds check against the remaining buffer length.
@@ -21,3 +21,7 @@ sigrelay parses SIP and Diameter from untrusted peers. Review every change to `s
 - New or changed parser paths need malformed-input tests (truncated input, oversized and undersized lengths, invalid characters, boundary values) in the same change.
 - Flag any weakened or deleted test: removed assertions, loosened expected values, deleted test cases, entries removed from `tests/test_list.h`, or tests skipped or disabled.
 - Flag new entries in `tests/quarantine.cmake` that do not link to the triage comment that justified them.
+
+## Third-party code
+- Flag every change under `third_party/` as High severity: "third-party code change: needs code-owner review; confirm upstream source, version and license".
+- Do not report style or static-analysis findings inside the unmodified upstream files under `third_party/`. For those files, only check whether they match the upstream release declared in `third_party/<lib>/VERSION` (version, release tarball and SHA-256), and flag any file that does not.
