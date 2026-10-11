@@ -399,9 +399,27 @@ def short_flags(args, short_with_value):
     return flags
 
 
+def canonical_config_args(args):
+    """Rewrite unambiguous --file prefixes (--fil) so the value is parsed as --file.
+
+    --fi is ambiguous with --fixed-value and is left alone; git rejects it.
+    Abbreviations after -- are keys, not options.
+    """
+    end = args.index("--") if "--" in args else len(args)
+    canonical = []
+    for index, arg in enumerate(args):
+        if index < end and arg.startswith("--"):
+            name, sep, value = arg[2:].partition("=")
+            if len(name) >= 3 and name != "file" and "file".startswith(name):
+                arg = "--file" + (sep + value if sep else "")
+        canonical.append(arg)
+    return canonical
+
+
 def config_reason(args):
     """git config may read anything, but may not write where remotes, includes, aliases and
     submodules point, nor write .gitmodules at all."""
+    args = canonical_config_args(args)
     end = args.index("--") if "--" in args else len(args)
     names = [a[2:].split("=", 1)[0] for a in args[:end] if a.startswith("--")]
     flags = short_flags(args, "ft")
@@ -620,6 +638,11 @@ def gh_reason(args):
         return outside_code(GH_OTHER_REPO)
     command = gh_command(args)
     path = [word for _, word in command[:2]]
+    # The expansion is not visible when the alias later runs. --shell and a leading
+    # ! run sh, and a plain alias can hide repo clone, gist clone or release download.
+    if path in (["alias", "set"], ["alias", "import"]):
+        return outside_code("`gh alias %s` (an alias can hide its subcommand or run a shell)"
+                            % path[1])
     if path in (["repo", "clone"], ["gist", "clone"]):
         return outside_code("`gh %s clone`" % path[0])
     if path == ["release", "download"]:
@@ -655,13 +678,88 @@ def inline_code_reason(interpreter, args):
     return None
 
 
+# Flags whose next word is a value, so it is not `deno run`'s script. Permission
+# flags require `=` and are not listed. --preload / --require / --import execute
+# their value (a remote one is a download).
+DENO_VALUE_FLAGS = {
+    "--cert", "--conditions", "--config", "--cpu-prof-dir", "--cpu-prof-interval",
+    "--cpu-prof-name", "--eval", "--eval-file", "--ext", "--import", "--import-map",
+    "--importmap", "--inspect-publish-uid", "--location", "--lock", "--log-level",
+    "--min-dep-age", "--minimum-dependency-age", "--preload", "--require", "--seed",
+}
+DENO_REMOTE_FLAGS = {"--import", "--preload", "--require"}
+DENO_EVAL_NETWORK = ("`deno eval` code that uses fetch, http, https, net, tls, dgram, undici or a "
+                     "network tool is not allowed because new network calls need review.")
+
+
+def deno_code_uses_network(code):
+    return JS_NETWORK.search(code) is not None or NETWORK_TOOL_WORDS.search(code) is not None
+
+
+def is_remote_module(value):
+    """An http(s) module specifier, including one entry of a comma-separated list."""
+    return any(part.strip().lower().startswith(("http://", "https://"))
+               for part in value.split(","))
+
+
+def deno_remote_reason(how):
+    return ("`deno %s` of a remote module is not allowed because new network calls need review."
+            % how)
+
+
+def deno_remote_load(args):
+    """A remote module deno would fetch and execute.
+
+    `deno run <url>`, a bare `deno <url>` (run is the default when a script is
+    given), or --preload / --require / --import of a url. Global flags before
+    the subcommand are skipped.
+    """
+    subcommand = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            if subcommand in (None, "run") and index < len(args) and is_remote_module(args[index]):
+                return "run"
+            return None
+        if arg in ("-c", "-L"):
+            index += 1
+            continue
+        if arg.startswith("--"):
+            flag, sep, value = arg.partition("=")
+            if not sep and flag in DENO_VALUE_FLAGS:
+                value = args[index] if index < len(args) else ""
+                index += 1
+            if flag in DENO_REMOTE_FLAGS and is_remote_module(value):
+                return flag
+            continue
+        if arg.startswith("-"):
+            continue
+        if subcommand is None:
+            # No subcommand and the first positional is a url: `deno https://...`.
+            if is_remote_module(arg):
+                return "run"
+            subcommand = arg
+            continue
+        if subcommand == "run" and is_remote_module(arg):
+            return "run"
+        return None
+    return None
+
+
 def deno_reason(args):
-    words = [arg for arg in args if not arg.startswith("-")]
-    if "eval" in words:
-        code = " ".join(args[args.index("eval") + 1:])
-        if JS_NETWORK.search(code) or NETWORK_TOOL_WORDS.search(code):
-            return ("`deno eval` code that uses fetch, http, https, net, tls, dgram, undici or a "
-                    "network tool is not allowed because new network calls need review.")
+    # `deno eval` is a subcommand. `deno repl --eval` / `--eval-file` is not.
+    if "eval" in [arg for arg in args if not arg.startswith("-")]:
+        if deno_code_uses_network(" ".join(args[args.index("eval") + 1:])):
+            return DENO_EVAL_NETWORK
+    if any(deno_code_uses_network(code) for code in option_values(args, "--eval")):
+        return DENO_EVAL_NETWORK
+    if any(is_remote_module(path) for path in option_values(args, "--eval-file")):
+        return deno_remote_reason("--eval-file")
+    loaded = deno_remote_load(args)
+    if loaded:
+        return deno_remote_reason(loaded)
     return None
 
 
