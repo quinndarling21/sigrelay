@@ -77,12 +77,13 @@ jobs:
       # most 10 error annotations per step and 50 per job; the cppcheck-sarif
       # artifact and the step summary hold the complete list.
       #
-      # Only src and include are checked. The vendored zlib (vendor/zlib) is
-      # deliberately not on the include path: parsing zlib.h and zconf.h adds
-      # their #ifdef configurations and could report findings in code this
-      # repository does not modify. --library=zlib loads cppcheck's bundled
-      # description of the zlib API instead, so calls into zlib from src are
-      # still checked (null pointers, constants) without reading vendor files.
+      # Only src and include are checked. The vendored zlib (third_party/zlib)
+      # is deliberately not on the include path: parsing zlib.h and zconf.h
+      # adds their #ifdef configurations and could report findings in upstream
+      # code this repository does not modify. --library=zlib loads cppcheck's
+      # bundled description of the zlib API instead, so calls into zlib from
+      # src are still checked (null pointers, constants) without reading any
+      # file under third_party/.
       - name: Run cppcheck
         run: |
           status=0

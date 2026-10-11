@@ -14,7 +14,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-Wall -Wextra)
 
-add_subdirectory(vendor/zlib)
+add_subdirectory(third_party/zlib)
 
 add_library(sigrelay STATIC
   src/sigrelay.c

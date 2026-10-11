@@ -41,8 +41,9 @@ pipeline {
 
         // cppcheck 2.16+ can write SARIF itself; XML plus the converter keeps
         // the output identical to GitHub Actions for older distribution builds.
-        // As there, vendor/zlib stays off the include path and --library=zlib
-        // describes the zlib API, so only src and include are analysed.
+        // As there, third_party/zlib stays off the include path and
+        // --library=zlib describes the zlib API, so only src and include are
+        // analysed.
         stage('cppcheck') {
             steps {
                 catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
