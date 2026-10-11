@@ -106,28 +106,74 @@ Items are: each cppcheck or clang-tidy finding, each failing test, and each fail
 
 For every failing test that involves time, timeouts, TTLs, randomness or ordering, rerun that single test 20 times in isolation on the failing commit before you classify it. Decide from the test function (`test_<name>` in `tests/test_*.c`; `tests/hooks/test_policies.py` for `hook_policies`, `tests/tools/test_annotations.py` for `report_tools`) and the code it calls: wall-clock reads, sleeps, timeouts, TTL or expiry logic, random values, threads, iteration order, or state shared with other tests. A test that timed out in CI qualifies. When unsure, rerun.
 
-Build the failing commit with gcc, as the build-and-test job does, in a worktree outside the repository:
+Build the failing commit with gcc, as the build-and-test job does, in a worktree outside the repository, and rerun the test there with this script. Save it as `/tmp/ci-triage-<id>/rerun.sh`:
 
 ```bash
-git fetch origin <headSha>
-git worktree add --detach /tmp/ci-triage-<id>/checkout <headSha>
-cd /tmp/ci-triage-<id>/checkout && git rev-parse HEAD   # must print <headSha>
-cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON && cmake --build build --parallel
-for i in $(seq 20); do ctest --test-dir build -R '^<name>$' --output-on-failure >/dev/null && echo pass || echo fail; done | sort | uniq -c
+#!/usr/bin/env bash
+# Usage: rerun.sh <commit> <test name> <work dir> [extra ctest arguments]
+# Prints "<passes>/20 passed", or "rerun failed: <reason>" and exits 1.
+sha=$1 name=$2 work=$3
+shift 3
+tree=$work/checkout
+logs=$work/reruns
+
+fail() {
+  if [ -n "${2:-}" ]; then tail -n 20 "$2" >&2; fi
+  echo "rerun failed: $1"
+  exit 1
+}
+
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit '$sha'"
+[[ $name =~ ^[a-z0-9_]+$ ]] || fail "invalid test name '$name'"
+mkdir -p "$logs" || fail "cannot create $logs"
+
+if [ ! -e "$tree" ]; then
+  git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch origin "$sha" || fail "git fetch origin $sha failed"
+  git worktree add --detach "$tree" "$sha" || fail "git worktree add failed"
+fi
+cd "$tree" || fail "cannot enter $tree"
+[ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || fail "$tree is not a git worktree"
+[ "$(git rev-parse HEAD)" = "$sha" ] || fail "$tree is not at $sha"
+
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON > "$logs/configure.log" 2>&1 \
+  || fail "configure failed" "$logs/configure.log"
+cmake --build build --parallel > "$logs/build.log" 2>&1 || fail "build failed" "$logs/build.log"
+
+passed=0
+for i in $(seq 20); do
+  log=$logs/$name.$i.log
+  ctest --test-dir build -R "^$name\$" --output-on-failure "$@" > "$log" 2>&1
+  # ctest prints "No tests were found!!!" and exits 0 when the name matches nothing.
+  grep -Eq "^1/1 Test +#[0-9]+: $name " "$log" \
+    && grep -Eq '^(0|100)% tests passed, [01] tests failed out of 1$' "$log" \
+    || fail "no matching test" "$log"
+  ! grep -q '\*\*\*Not Run' "$log" || fail "test did not start" "$log"
+  if grep -q '^100% tests passed, 0 tests failed out of 1$' "$log"; then passed=$((passed + 1)); fi
+done
+echo "$passed/20 passed"
 ```
 
-ctest has no default timeout here, so for a test that timed out or hung in CI add `--timeout 60` to the `ctest` call; a hang then counts as a failure instead of stalling the loop. Report the result as `<passes>/20 passed`, for example `4/20 passed`, and read it as follows:
+Run it from the repository checkout, once per test, with the full `<headSha>` and the ctest test name (the annotation title, for example `sip_parses_invite`, not the C function `test_sip_parses_invite`). Later tests of the same run reuse `/tmp/ci-triage-<id>/checkout`:
+
+```bash
+bash /tmp/ci-triage-<id>/rerun.sh <headSha> <name> /tmp/ci-triage-<id>
+```
+
+Each setup step runs only if the previous one succeeded: the fetch (skipped when the commit is already local), `git worktree add`, the checks that the worktree is at `<headSha>` and that the script is inside it, the configure and the build. Each of the 20 ctest runs writes its output to `/tmp/ci-triage-<id>/reruns/<name>.<n>.log`, and the script checks there that exactly the named test ran. It stops at the first failed step or at the first run that did not execute the test, prints the end of that log, and reports `rerun failed: <reason>`, for example `rerun failed: build failed` or `rerun failed: no matching test`. It prints `<passes>/20 passed` only when all 20 runs executed the test. If it reports `no matching test`, check `<name>` against the annotation title and run it once more before falling back to the CI evidence.
+
+ctest has no default timeout here, so for a test that timed out or hung in CI append `--timeout 60` to the command (the script passes extra arguments to ctest); a hang then counts as a failure instead of stalling the loop. Put the result in the Reruns column exactly as printed, for example `4/20 passed` or `rerun failed: build failed`, and read it as follows:
 
 - Mixed (1 to 19 of 20 passed): flaky.
 - `0/20 passed`: real, a deterministic failure.
 - `20/20 passed`: the CI failure did not reproduce locally. Say so in the Reasoning and classify the test from the CI evidence (annotations, log, CI rerun) as below.
+- `rerun failed: <reason>`: the rerun shows nothing about the test. Never write it as `0/20 passed` and never classify the test as real because of it. Classify the test from the CI evidence as below and say so in the Reasoning, for example "Rerun failed (build failed); classified from the CI log."
 
 ### (b) Classification
 
 Classify each item as exactly one of:
 
 - **real**: the code or the test is wrong and must be fixed.
-- **flaky**: the result does not depend on the code. Requires evidence: a mixed result in the isolated reruns of (a); or, for a test that (a) did not rerun or that passed 20/20 there and for a failing job, it passes when the failed jobs are rerun in CI (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the result depends on timing, ordering or the environment and you can point at that dependence. Rerun in CI at most once. A test with `0/20 passed` is never flaky.
+- **flaky**: the result does not depend on the code. Requires evidence: a mixed result in the isolated reruns of (a); or, for a test that (a) did not rerun, that passed 20/20 there or whose rerun failed, and for a failing job, it passes when the failed jobs are rerun in CI (`gh run rerun <id> --failed`, then `gh run watch <id>` and `gh run view <id> --attempt <n> --json jobs`), or the result depends on timing, ordering or the environment and you can point at that dependence. Rerun in CI at most once. A test with `0/20 passed` is never flaky.
 - **false positive**: the tool is wrong. Requires a concrete reason the code is correct, citing the code that makes it so (`file:line` of the bounds check or invariant the analyzer did not follow).
 
 If you cannot produce the required evidence for flaky or false positive, classify the item as real.
@@ -136,7 +182,7 @@ For every item record:
 
 - **Item**: the ruleId, the test name, or the job name.
 - **Type**: `cppcheck`, `clang-tidy`, `test` or `job`.
-- **Reruns**: `<passes>/20 passed` from (a), then `CI attempt <n> passed` or `CI attempt <n> failed` if you reran the failed jobs in CI; `none` if neither.
+- **Reruns**: `<passes>/20 passed` or `rerun failed: <reason>` from (a), then `CI attempt <n> passed` or `CI attempt <n> failed` if you reran the failed jobs in CI; `none` if neither.
 - **Cause**: `file:line` (from the annotation, the finding or test line in the log, or SARIF/JUnit) or a verbatim quoted log line.
 - **Reasoning**: one line.
 
@@ -160,7 +206,7 @@ Failing jobs: <job>, <job>
 
 | Item | Type | Classification | Reruns | Cause | Reasoning |
 | --- | --- | --- | --- | --- | --- |
-| `<item>` | <type> | <real, flaky or false positive> | <e.g. 4/20 passed, or none> | `<file:line>` or "<log line>" | <one line> |
+| `<item>` | <type> | <real, flaky or false positive> | <e.g. 4/20 passed, rerun failed: build failed, or none> | `<file:line>` or "<log line>" | <one line> |
 
 Pull requests: none yet
 ```
@@ -169,15 +215,18 @@ Later steps add PR links by editing this comment in place (GitHub MCP `update_is
 
 ### Repeat failures on the same pull request
 
-A pull request can fail again after it was triaged, on a later push or a rerun. Before posting, list the pull request's comments and the open pull requests that may already cover its items, with read-only `gh`:
+A pull request can fail again after it was triaged, on a later push or a rerun. Before posting, list the pull request's comments and the open pull requests that may already cover its items, with read-only `gh`. `<number>` is the pull request being triaged; the `--jq` filter removes it from the pull request lists, because it can mention or touch the failing test without covering the finding:
 
 ```bash
 gh pr view <number> --comments
 gh api 'repos/{owner}/{repo}/issues/<number>/comments' --paginate \
   --jq '.[] | select(.body | startswith("## CI triage: run ")) | [.id, .html_url, .created_at, (.body | split("\n")[0])] | @tsv'
-gh pr list --state open --base <headBranch> --json number,title,url,headRefName,body
-gh pr list --state open --search '"CI triage" in:title' --json number,title,url,headRefName,baseRefName,body
-gh pr list --state open --search '<ruleId or test name>' --json number,title,url,headRefName,baseRefName
+gh pr list --state open --base <headBranch> --json number,title,url,headRefName,body \
+  --jq 'map(select(.number != <number>))'
+gh pr list --state open --search '"CI triage" in:title' --json number,title,url,headRefName,baseRefName,body \
+  --jq 'map(select(.number != <number>))'
+gh pr list --state open --search '<ruleId or test name>' --json number,title,url,headRefName,baseRefName \
+  --jq 'map(select(.number != <number>))'
 ```
 
 - **Earlier triage comment.** A comment whose first line is `## CI triage: run <earlier id>` comes from this procedure; if there are several, take the latest. If it is for this same run, do not post again: edit it if your tooling supports that, otherwise leave it and report its URL. For an earlier run, the default is to post one new comment that names the run it supersedes (run ID and the run URL from the earlier comment's `Run:` line) and leads with what changed since then, followed by the usual run line and full table:
@@ -196,7 +245,7 @@ gh pr list --state open --search '<ruleId or test name>' --json number,title,url
   ```
 
   Write `none` for an empty group. Only if your tooling supports editing comments (GitHub MCP `update_issue_comment`, or the `gh api --method PATCH` call above), edit the earlier comment in place instead, with the same content. Either way, the resulting comment is the triage comment for the later steps.
-- **Open pull request for the same finding.** Before opening a dispositions or fix PR (steps 6 and 7), check the open pull requests listed above for one that already covers the same finding: the same rule ID and `file:line`, or the same failing test (read its title, body and `gh pr diff <number>`). If one does, do not open a duplicate: link it in the triage table by ending the item's Reasoning with `Covered by <pr url>.` and list it under `Pull requests:`. Open PRs only for the items no open pull request covers.
+- **Open pull request for the same finding.** Before opening a dispositions or fix PR (steps 6 and 7), check the open pull requests listed above for one that already covers the same finding: the same rule ID and `file:line`, or the same failing test (read its title, body and `gh pr diff <its number>`). The pull request being triaged never covers its own finding, even if a search returns it. If another one does, do not open a duplicate: link it in the triage table by ending the item's Reasoning with `Covered by <pr url>.` and list it under `Pull requests:`. Open PRs only for the items no open pull request covers.
 
 ## 6. Dispositions PR (only if there are false positives or flaky items that no open pull request covers)
 
@@ -223,7 +272,7 @@ gh pr list --state open --search '<ruleId or test name>' --json number,title,url
    - Run `cppcheck --version` and `clang-tidy --version`. If either is missing, run `sudo apt-get install -y cppcheck clang-tidy` once; if a scanner is still missing, say so explicitly in the PR body (for example "clang-tidy not rerun locally: not installable in the agent environment") and leave that check to CI. Never skip a scanner silently.
    - Configure and build with both compilers, warnings as errors, then run `ctest -LE quarantine`.
    - Rerun the scanner that reported each item and confirm the item is gone and no new finding appears. Run both scanners whenever the change touches `src/` or `include/`, the directories they scan.
-   - For each flaky test fixed in step 6.3, rerun it 20 times in isolation against `build` with the loop from step 4 (a); it must report `20/20 passed`. If step 4 (a) also gave 20/20 on the failing commit, the reruns cannot show the fix: say so in the PR body and name the change that removes the nondeterminism.
+   - For each flaky test fixed in step 6.3, commit the fix and rerun the test 20 times in isolation with the script from step 4 (a), giving it the fix commit and a work directory for that commit: `bash /tmp/ci-triage-<id>/rerun.sh "$(git rev-parse HEAD)" <name> "/tmp/ci-triage-<id>/verify-$(git rev-parse --short HEAD)"`. It must report `20/20 passed`; `rerun failed` does not count. If step 4 (a) also gave 20/20 on the failing commit, the reruns cannot show the fix: say so in the PR body and name the change that removes the nondeterminism.
    - Put the tool versions and the results (ctest summary line, each converter's finding count, each fixed flaky test's rerun count next to its count from step 4 (a), for example "20/20 passed (4/20 on `<headSha>`)") in the PR body.
 
    The commands, as in `.github/workflows/ci.yml` (if the two differ, follow ci.yml). clang-tidy gets its own build directory here so that `build/` keeps the tests:
