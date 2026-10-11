@@ -25,11 +25,11 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
           test -n "$CURSOR_API_KEY" || { echo "CURSOR_API_KEY secret is not available"; exit 1; }
-          code=$(curl -s -o me.json -w '%{http_code}' -u "$CURSOR_API_KEY:" https://api.cursor.com/v1/me)
+          code=$(curl --connect-timeout 10 --max-time 30 -s -o me.json -w '%{http_code}' -u "$CURSOR_API_KEY:" https://api.cursor.com/v1/me)
           echo "GET /v1/me -> HTTP $code"
           python3 -c "import json; d=json.load(open('me.json')); print('api key name:', d.get('apiKeyName'))"
           test "$code" = "200"
-          code=$(curl -s -o models.json -w '%{http_code}' -u "$CURSOR_API_KEY:" https://api.cursor.com/v1/models)
+          code=$(curl --connect-timeout 10 --max-time 30 -s -o models.json -w '%{http_code}' -u "$CURSOR_API_KEY:" https://api.cursor.com/v1/models)
           echo "GET /v1/models -> HTTP $code"
           python3 -c "import json; d=json.load(open('models.json')); print('models available:', len(d.get('items', [])))"
           test "$code" = "200"

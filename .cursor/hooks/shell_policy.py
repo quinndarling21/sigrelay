@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-BLOCKED = re.compile(r"(^|[\s;&|()`$/])curl(\s|$)")
+BLOCKED = re.compile(r"""(^|[\s;&|()`$/'"])curl(\s|$|[;&|)'"`])""")
 
 
 def main() -> None:
