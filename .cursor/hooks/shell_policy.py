@@ -55,6 +55,28 @@ WRAPPERS = {
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
                           "--super-prefix"}
 
+# git fetch / git pull options that may take their value as the next word
+# ("--depth 1", "-j 4"), as long options and short option letters. Options
+# with an optional value (pull's -j, -r, -S, --log) only take it attached.
+FETCH_OPTIONS_WITH_VALUE = {
+    "fetch": ({"--upload-pack", "--jobs", "--depth", "--shallow-since", "--shallow-exclude",
+               "--deepen", "--refmap", "--server-option", "--negotiation-tip", "--filter",
+               "--submodule-prefix", "--recurse-submodules-default"}, "jo"),
+    "pull": ({"--cleanup", "--strategy", "--strategy-option", "--upload-pack", "--depth",
+              "--shallow-since", "--shallow-exclude", "--deepen", "--refmap", "--server-option",
+              "--negotiation-tip"}, "sXo"),
+}
+CARGO_OPTIONS_WITH_VALUE = {"--color", "--config", "--explain"}
+NPM_INSTALL = {"install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
+               "isntall", "add", "install-test", "it"}
+# npm, yarn and pnpm accept options with values and nested commands anywhere
+# (npm --prefix web install, yarn global add, pnpm --filter web add), so every
+# word that is not an option is checked.
+NODE_PACKAGE_ADD = {"npm": NPM_INSTALL, "yarn": {"add"}, "yarnpkg": {"add"}, "pnpm": {"add"}}
+
+OUTSIDE_CODE = ("new outside code (dependencies, repositories, remotes) needs human review "
+                "before it enters this repository.")
+
 
 class ParseError(Exception):
     pass
@@ -62,12 +84,19 @@ class ParseError(Exception):
 
 def deny(reason):
     user_message = "Blocked by repository policy: " + reason
+    report = "report it to the user"
+    if reason.endswith(OUTSIDE_CODE):
+        report += " with what you wanted to add and why"
     return {
         "permission": "deny",
         "user_message": user_message,
         "agent_message": user_message + " Do not work around this (no other tool, wrapper or "
-                         "rewritten command); report it to the user.",
+                         "rewritten command); " + report + ".",
     }
+
+
+def outside_code(command):
+    return "%s is not allowed in agent shells because %s" % (command, OUTSIDE_CODE)
 
 
 def tokenize(text):
@@ -188,6 +217,53 @@ def rm_reason(args):
     return None
 
 
+def positional_words(args, long_with_value, short_with_value):
+    """Words that are neither options nor option values; everything after -- counts."""
+    words = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":
+            words.extend(args[i:])
+            break
+        if arg.startswith("--"):
+            if arg in long_with_value:
+                i += 1
+        elif arg.startswith("-") and len(arg) > 1:
+            # A short option with a value ends its cluster: -j4, or -qj 4.
+            for j, flag in enumerate(arg[1:], 1):
+                if flag in short_with_value:
+                    if j == len(arg) - 1:
+                        i += 1
+                    break
+        else:
+            words.append(arg)
+    return words
+
+
+def fetch_reason(subcommand, args):
+    """git fetch / git pull may only name origin as the remote, or no remote at all."""
+    long_with_value, short_with_value = FETCH_OPTIONS_WITH_VALUE[subcommand]
+    multiple = False
+    for arg in args:
+        if arg == "--":
+            break
+        name = arg[2:].split("=", 1)[0] if arg.startswith("--") else None
+        # git accepts unambiguous prefixes of long options (--al is --all).
+        if name is not None and len(name) >= 2 and "all".startswith(name):
+            return outside_code("`git %s --all` (every configured remote, not only `origin`)"
+                                % subcommand)
+        if subcommand == "fetch":
+            multiple = multiple or (bool(name) and "multiple".startswith(name)) or (
+                SHORT_OPTIONS.match(arg) is not None and "m" in arg)
+    words = positional_words(args, long_with_value, short_with_value)
+    remotes = words if multiple else words[:1]
+    if any(remote != "origin" for remote in remotes):
+        return outside_code("`git %s` from a remote other than `origin`" % subcommand)
+    return None
+
+
 def git_reason(args):
     i = 0
     while i < len(args) and args[i].startswith("-"):
@@ -213,12 +289,40 @@ def git_reason(args):
         for arg in rest:
             if arg.startswith("--") and len(arg) > 3 and "--hard".startswith(arg):
                 return "`git reset --hard` is not allowed because it discards uncommitted work."
+    elif subcommand == "clone":
+        return outside_code("`git clone`")
+    elif subcommand in ("fetch", "pull"):
+        return fetch_reason(subcommand, rest)
+    elif subcommand in ("remote", "submodule"):
+        words = [a for a in rest if not a.startswith("-")]
+        if words[:1] == ["add"]:
+            return outside_code("`git %s add`" % subcommand)
+        # git remote update fetches every remote unless it is given names.
+        if subcommand == "remote" and words[:1] == ["update"]:
+            if not words[1:] or any(remote != "origin" for remote in words[1:]):
+                return outside_code("`git remote update` from a remote other than `origin`")
     return None
 
 
 def pip_reason(args):
     if "install" in [a for a in args if not a.startswith("-")]:
-        return "`pip install` is not allowed because new dependencies need review."
+        return outside_code("`pip install`")
+    return None
+
+
+def package_reason(name, args):
+    if name in NODE_PACKAGE_ADD:
+        for word in args:
+            if not word.startswith("-") and word in NODE_PACKAGE_ADD[name]:
+                return outside_code("`%s %s`" % (name, word))
+    elif name == "go":
+        if positional_words(args, {"--C"}, "C")[:1] == ["get"]:
+            return outside_code("`go get`")
+    elif name == "cargo":
+        if args and args[0].startswith("+"):
+            args = args[1:]
+        if positional_words(args, CARGO_OPTIONS_WITH_VALUE, "CZ")[:1] == ["add"]:
+            return outside_code("`cargo add`")
     return None
 
 
@@ -263,7 +367,7 @@ def program_reason(name, args):
         return pip_reason(args)
     if PYTHON.match(name):
         return python_reason(args)
-    return None
+    return package_reason(name, args)
 
 
 def segment_reason(words, depth):

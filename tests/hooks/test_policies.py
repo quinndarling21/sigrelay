@@ -142,6 +142,152 @@ class ShellPolicyTest(DecisionAssertions):
         "python3 tools/clang_tidy_to_sarif.py clang-tidy.log clang-tidy.sarif",
     ]
 
+    OUTSIDE_CODE_DENIED = [
+        "git clone https://github.com/example/lib.git",
+        "git clone --depth=1 git@github.com:example/lib.git third_party/lib",
+        "git clone ../sigrelay /tmp/sigrelay-copy",
+        "git -C /tmp clone https://example.com/lib.git",
+        "git -c core.quotepath=false clone https://example.com/lib.git",
+        "/usr/bin/git clone https://example.com/lib.git",
+        "sudo git clone https://example.com/lib.git /opt/lib",
+        "cd /tmp && git clone https://example.com/lib.git",
+        "echo $(git clone https://example.com/lib.git)",
+        "git fetch upstream",
+        "git fetch https://github.com/example/lib.git main",
+        "git fetch git@github.com:example/lib.git",
+        "git fetch ssh://git@example.com/lib.git",
+        "git fetch file:///srv/git/lib.git",
+        "git fetch ../other-checkout",
+        "git fetch /srv/git/lib.git main",
+        "git fetch --depth=1 upstream main",
+        "git fetch --depth 1 upstream main",
+        "git fetch -j 4 upstream",
+        "git fetch --prune -- upstream",
+        "git fetch --all",
+        "git fetch --all --prune",
+        "git fetch --multiple origin upstream",
+        "git fetch -m origin upstream",
+        "git -C /tmp/repo fetch upstream",
+        "git -c protocol.version=2 fetch https://example.com/lib.git",
+        "git -C /tmp/repo -c core.quotepath=false fetch --depth=1 upstream main",
+        "git pull upstream main",
+        "git pull https://github.com/example/lib.git main",
+        "git pull --rebase upstream main",
+        "git pull --rebase git@github.com:example/lib.git main",
+        "git pull -s ort -X theirs upstream main",
+        "git pull --all",
+        "git -C /tmp/repo pull upstream main",
+        "git -c pull.rebase=true pull upstream main",
+        "git fetch origin; git fetch upstream",
+        "git status && git pull upstream main",
+        "git fetch origin || git fetch upstream",
+        "git remote -v | git fetch upstream",
+        "(cd /tmp/repo && git fetch upstream)",
+        "env GIT_TERMINAL_PROMPT=0 git fetch https://example.com/lib.git",
+        "sudo -u build git pull upstream main",
+        "/usr/bin/git fetch upstream",
+        "bash -c 'git fetch upstream'",
+        "git remote update",
+        "git remote update upstream",
+        "git submodule add https://github.com/example/lib.git third_party/lib",
+        "git submodule --quiet add ../lib third_party/lib",
+        "git -C /tmp/repo submodule add https://example.com/lib.git lib",
+        "git remote add upstream https://github.com/example/lib.git",
+        "git remote add origin https://example.com/lib.git",
+        "git remote --verbose add upstream ../lib",
+        "git -c core.quotepath=false remote add upstream https://example.com/lib.git",
+        "git remote -v && git remote add upstream https://example.com/lib.git",
+        "npm install",
+        "npm install lodash",
+        "npm i -D typescript",
+        "npm add left-pad",
+        "npm isntall lodash",
+        "npm --prefix web install",
+        "/usr/bin/npm install -g typescript",
+        "sudo npm install -g typescript",
+        "cd web && npm ci && npm install zod",
+        "yes | npm install lodash",
+        "yarn add react",
+        "yarn global add typescript",
+        "yarn workspace web add react",
+        "yarnpkg add react",
+        "env CI=1 yarn add react",
+        "pnpm add zod",
+        "pnpm --filter web add -D vitest",
+        "pnpm -C web add zod",
+        "go get golang.org/x/net@latest",
+        "go get -u ./...",
+        "go -C tools get golang.org/x/tools/cmd/stringer",
+        "env GOFLAGS=-mod=mod go get ./...",
+        "go build ./... && go get golang.org/x/net",
+        "cargo add serde",
+        "cargo +nightly add serde --features derive",
+        "cargo --color never add serde",
+        "cargo -C crates/relay add serde",
+        "cargo build; cargo add tokio",
+        "sudo pip3 install requests",
+        "make && python3 -m pip install -e .",
+    ]
+
+    OUTSIDE_CODE_ALLOWED = [
+        "git fetch",
+        "git fetch origin",
+        "git fetch origin main",
+        "git fetch origin cursor/dependency-policy",
+        "git fetch --depth=1 origin main",
+        "git fetch --depth 1 origin main",
+        "git fetch --prune --tags origin",
+        "git fetch -j 4 origin",
+        "git fetch --multiple origin",
+        "git fetch -- origin main",
+        "git fetch origin +refs/heads/main:refs/remotes/origin/main",
+        "git pull",
+        "git pull --ff-only",
+        "git pull origin main",
+        "git pull --rebase origin main",
+        "git pull --rebase=merges origin main",
+        "git pull -s ort origin main",
+        "git pull -X theirs origin main",
+        "git pull -j4 origin main",
+        "git -C /workspace fetch origin main",
+        "git -c core.quotepath=false fetch origin",
+        "git -C /workspace -c protocol.version=2 pull --rebase origin main",
+        "/usr/bin/git fetch origin",
+        "sudo git fetch origin",
+        "env GIT_TERMINAL_PROMPT=0 git pull origin main",
+        "git fetch origin && git rebase origin/main",
+        "git fetch origin main || git fetch origin",
+        "git fetch origin; git status",
+        "git remote -v | grep origin",
+        "(cd /workspace && git pull origin main)",
+        "git remote",
+        "git remote -v",
+        "git remote show origin",
+        "git remote get-url origin",
+        "git remote update origin",
+        "git submodule status",
+        "git submodule update --init",
+        "git log --grep 'git clone'",
+        'git commit -m "Deny git clone, npm install and cargo add"',
+        "grep -rn 'npm install' .github/",
+        "echo go get is denied",
+        "npm ci",
+        "npm test",
+        "npm run build",
+        "npm ci && npm test",
+        "/usr/bin/npm ci",
+        "yarn install --frozen-lockfile",
+        "pnpm install --frozen-lockfile",
+        "go build ./...",
+        "go test -run get ./...",
+        "go mod verify",
+        "go -C tools build ./...",
+        "cargo build",
+        "cargo build --release",
+        "cargo test add",
+        "cargo --color never build",
+    ]
+
     def test_denied_commands(self):
         for command in self.DENIED:
             with self.subTest(command=command):
@@ -152,10 +298,38 @@ class ShellPolicyTest(DecisionAssertions):
             with self.subTest(command=command):
                 self.assert_allowed(shell(command), command)
 
+    def test_outside_code_is_denied(self):
+        for command in self.OUTSIDE_CODE_DENIED:
+            with self.subTest(command=command):
+                decision = shell(command)
+                self.assert_denied(decision, command)
+                self.assertTrue(decision["user_message"].endswith(
+                    "new outside code (dependencies, repositories, remotes) needs human review "
+                    "before it enters this repository."), decision["user_message"])
+                self.assertTrue(decision["agent_message"].endswith(
+                    "report it to the user with what you wanted to add and why."),
+                    decision["agent_message"])
+
+    def test_origin_and_builds_are_allowed(self):
+        for command in self.OUTSIDE_CODE_ALLOWED:
+            with self.subTest(command=command):
+                self.assert_allowed(shell(command), command)
+
     def test_deny_message_names_the_rule(self):
         self.assertIn("`curl`", shell("curl https://example.com")["user_message"])
         self.assertIn("rm -rf", shell("rm -rf build")["user_message"])
         self.assertIn("git clean", shell("git clean -fd")["user_message"])
+        self.assertIn("`git clone`", shell("git clone ../lib")["user_message"])
+        self.assertIn("other than `origin`", shell("git fetch upstream")["user_message"])
+        self.assertIn("`npm i`", shell("npm i lodash")["user_message"])
+        self.assertIn("`cargo add`", shell("cargo add serde")["user_message"])
+
+    def test_other_denies_keep_their_report_instruction(self):
+        for command in ["curl https://example.com", "rm -rf build", "git push --force"]:
+            with self.subTest(command=command):
+                agent_message = shell(command)["agent_message"]
+                self.assertTrue(agent_message.endswith("; report it to the user."), agent_message)
+                self.assertNotIn("outside code", agent_message)
 
     def test_unreadable_payload_is_denied(self):
         self.assert_denied(run_hook(SHELL_POLICY, "not json"), "not json")

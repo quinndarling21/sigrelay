@@ -16,6 +16,11 @@ alwaysApply: true
 ## Network calls and dependencies
 - Do not add network calls (sockets, HTTP clients, DNS lookups, outbound connections from scripts or CI) without review.
 - Do not add libraries, packages, toolchains, GitHub Actions or downloaded binaries without review. Prefer what the distribution's package manager already provides.
+- New outside code (dependencies, repositories, remotes) needs human review before it enters this repository. Agent shells enforce this in `.cursor/hooks/shell_policy.py` and deny:
+  - `git clone`, `git submodule add` and `git remote add`, always.
+  - `git fetch`, `git pull` and `git remote update` from any remote other than `origin`: another remote name, a URL (`https://`, `git@`, `ssh://`, `file://`) or a local path, and `--all`. With no remote or with `origin` they are allowed, also after `git -C <dir>` and `-c key=value`.
+  - Package installs: `pip install` (also `python -m pip install`), `npm install` / `npm i` / `npm add`, `yarn add`, `pnpm add`, `go get` and `cargo add`. `npm ci`, `npm test`, `go build` and `cargo build` are allowed.
+- When an agent shell blocks a command, do not work around it; report what you wanted to add and why.
 
 ## Logging
 - Use structured logging with explicit levels (error, warn, info, debug). Every message carries an event name and key-value fields, not free-form string concatenation.
