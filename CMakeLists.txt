@@ -19,6 +19,7 @@ add_subdirectory(vendor/zlib)
 add_library(sigrelay STATIC
   src/sigrelay.c
   src/sip_parser.c
+  src/sip_body.c
   src/diameter_parser.c
   src/relay.c
 )
