@@ -40,6 +40,7 @@
     X(upstream_marks_member_down_after_failures)   \
     X(upstream_reports_probe_due)                  \
     X(upstream_selects_all_healthy_members)        \
+    X(upstream_select_reaches_last_member)         \
     X(upstream_select_weights_healthy_members)     \
     X(upstream_select_reports_none_healthy)        \
     X(upstream_cache_stores_and_expires)           \
