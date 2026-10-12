@@ -1,22 +1,50 @@
 #!/usr/bin/env python3
 """Tests for the agent hook policies in .cursor/hooks/.
 
-Each case runs the hook script as Cursor does: JSON payload on stdin, JSON
-decision on stdout.
+Decisions go through evaluate() in-process. main()'s stdin parser is covered
+by calling it with redirected stdio, plus one subprocess smoke per script
+(JSON on stdin, JSON on stdout) so the way Cursor launches the hook stays
+covered.
 """
+import importlib.util
+import io
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HOOKS_DIR = os.path.join(REPO_ROOT, ".cursor", "hooks")
 SHELL_POLICY = os.path.join(HOOKS_DIR, "shell_policy.py")
 PROTECT_TESTS = os.path.join(HOOKS_DIR, "protect_tests.py")
+# evaluate() is sub-millisecond. A few seconds still fails the old
+# one-interpreter-per-command suite (~17s locally, ~26s on CI).
+DECISION_BUDGET_SECONDS = 3.0
+# Above that budget, and below the subprocess suite, so a hang dies in this
+# ctest case and a startup regression cannot grow back toward the job limit.
+HOOK_POLICIES_TIMEOUT_SECONDS = 15
+
+
+def load_hook(path):
+    module_name = "sigrelay_" + os.path.splitext(os.path.basename(path))[0]
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_SHELL = load_hook(SHELL_POLICY)
+_PROTECT = load_hook(PROTECT_TESTS)
 
 
 def run_hook(script, stdin_text):
+    """One fresh interpreter, the way Cursor launches the hook."""
     result = subprocess.run([sys.executable, script], input=stdin_text, capture_output=True,
                             text=True, timeout=30, check=False)
     if result.returncode != 0:
@@ -24,16 +52,35 @@ def run_hook(script, stdin_text):
     return json.loads(result.stdout)
 
 
-def shell(command):
-    return run_hook(SHELL_POLICY, json.dumps({
+def run_main(module, stdin_text):
+    """main() with stdin/stdout redirected, so the wrapper is covered without a new process."""
+    old_stdin, old_stdout = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO(stdin_text)
+    sys.stdout = io.StringIO()
+    try:
+        code = module.main()
+        output = sys.stdout.getvalue()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_stdout
+    if code != 0:
+        raise AssertionError("%s main() returned %s" % (module.__name__, code))
+    return json.loads(output)
+
+
+def shell_payload(command):
+    return {
         "hook_event_name": "beforeShellExecution",
         "command": command,
         "cwd": REPO_ROOT,
         "workspace_roots": [REPO_ROOT],
-    }))
+    }
 
 
-def delete(path, **extra):
+def shell(command):
+    return _SHELL.evaluate(shell_payload(command))
+
+
+def delete_payload(path, **extra):
     payload = {
         "hook_event_name": "preToolUse",
         "tool_name": "Delete",
@@ -41,7 +88,11 @@ def delete(path, **extra):
         "workspace_roots": [REPO_ROOT],
     }
     payload.update(extra)
-    return run_hook(PROTECT_TESTS, json.dumps(payload))
+    return payload
+
+
+def delete(path, **extra):
+    return _PROTECT.evaluate(delete_payload(path, **extra))
 
 
 class DecisionAssertions(unittest.TestCase):
@@ -847,6 +898,18 @@ class ShellPolicyTest(DecisionAssertions):
         "git archive -o /tmp/sigrelay.zip HEAD src/",
     ]
 
+    def test_decisions_finish_within_a_few_seconds(self):
+        commands = (self.DENIED + self.ALLOWED + self.OUTSIDE_CODE_DENIED
+                    + self.OUTSIDE_CODE_ALLOWED)
+        started = time.monotonic()
+        for command in commands:
+            shell(command)
+        elapsed = time.monotonic() - started
+        self.assertLess(
+            elapsed, DECISION_BUDGET_SECONDS,
+            "deciding %d commands took %.2fs; a fresh interpreter per command is "
+            "what made hook_policies the slow ctest case" % (len(commands), elapsed))
+
     def test_denied_commands(self):
         for command in self.DENIED:
             with self.subTest(command=command):
@@ -931,8 +994,16 @@ class ShellPolicyTest(DecisionAssertions):
                 self.assertNotIn("outside code", agent_message)
 
     def test_unreadable_payload_is_denied(self):
-        self.assert_denied(run_hook(SHELL_POLICY, "not json"), "not json")
-        self.assert_denied(run_hook(SHELL_POLICY, json.dumps({"command": 42})), "command 42")
+        self.assert_denied(run_main(_SHELL, "not json"), "not json")
+        self.assert_denied(run_main(_SHELL, json.dumps({"command": 42})), "command 42")
+
+    def test_stdio_smoke_matches_evaluate(self):
+        # One fresh interpreter per script. The other main() cases redirect
+        # stdio in-process; this one checks that launch path still agrees.
+        payload = shell_payload("curl https://example.com")
+        self.assertEqual(_SHELL.evaluate(payload), run_hook(SHELL_POLICY, json.dumps(payload)))
+        allowed = shell_payload("git status && git diff")
+        self.assertEqual(_SHELL.evaluate(allowed), run_main(_SHELL, json.dumps(allowed)))
 
 
 class ProtectTestsPolicyTest(DecisionAssertions):
@@ -963,20 +1034,41 @@ class ProtectTestsPolicyTest(DecisionAssertions):
                 self.assert_allowed(delete(path), path)
 
     def test_other_tools_are_allowed(self):
-        decision = run_hook(PROTECT_TESTS, json.dumps({
+        decision = _PROTECT.evaluate({
             "tool_name": "Write",
             "tool_input": {"path": "tests/test_sip.c"},
             "workspace_roots": [REPO_ROOT],
-        }))
+        })
         self.assert_allowed(decision, "Write")
 
     def test_unverifiable_requests_are_denied(self):
-        self.assert_denied(run_hook(PROTECT_TESTS, "not json"), "not json")
-        self.assert_denied(run_hook(PROTECT_TESTS, json.dumps({
+        self.assert_denied(run_main(_PROTECT, "not json"), "not json")
+        self.assert_denied(run_main(_PROTECT, json.dumps({
             "tool_name": "Delete",
             "tool_input": {},
             "workspace_roots": [REPO_ROOT],
         })), "no path")
+
+    def test_stdio_smoke_matches_evaluate(self):
+        denied = delete_payload("tests/test_sip.c")
+        self.assertEqual(_PROTECT.evaluate(denied), run_hook(PROTECT_TESTS, json.dumps(denied)))
+        allowed = delete_payload("src/relay.c")
+        self.assertEqual(_PROTECT.evaluate(allowed), run_main(_PROTECT, json.dumps(allowed)))
+
+
+class CtestConfigTest(unittest.TestCase):
+    def test_hook_policies_has_a_hang_timeout(self):
+        path = os.path.join(REPO_ROOT, "tests", "CMakeLists.txt")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        match = re.search(
+            r"set_tests_properties\(\s*hook_policies\b[^)]*?\bTIMEOUT\s+(\d+)",
+            text, re.DOTALL)
+        self.assertIsNotNone(
+            match, "hook_policies has no ctest TIMEOUT; a hang runs until the job limit")
+        self.assertEqual(
+            int(match.group(1)), HOOK_POLICIES_TIMEOUT_SECONDS,
+            "hook_policies TIMEOUT must stay under the old subprocess runtime")
 
 
 class HooksConfigTest(unittest.TestCase):

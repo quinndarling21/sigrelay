@@ -26,6 +26,8 @@ endforeach()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME hook_policies
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/hooks/test_policies.py)
+# Above the in-process budget, below the old per-command startup (~17s here, ~26s on CI).
+set_tests_properties(hook_policies PROPERTIES TIMEOUT 15)
 add_test(NAME report_tools
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_annotations.py)
 
