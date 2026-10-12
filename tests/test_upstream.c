@@ -140,6 +140,21 @@ void test_upstream_adds_and_removes_members(void)
     TEST_ASSERT_EQ(2, pool.count);
 }
 
+void test_upstream_new_member_gets_full_credit(void)
+{
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_pool_init(&pool, 1000, 3));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF1, SIGRELAY_UPSTREAM_WEIGHT_MIN));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF2, SIGRELAY_UPSTREAM_WEIGHT_MAX));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_WEIGHT_MIN, pool.members[0].credit);
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_WEIGHT_MAX, pool.members[1].credit);
+
+    /* A member added mid-round joins with its full weight, not what is left of the round. */
+    TEST_ASSERT_EQ(0, select_index());
+    TEST_ASSERT_EQ(0, pool.members[0].credit);
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF3, 7));
+    TEST_ASSERT_EQ(7, pool.members[2].credit);
+}
+
 void test_upstream_rejects_invalid_members(void)
 {
     char name[SIGRELAY_UPSTREAM_NAME_MAX + 1];

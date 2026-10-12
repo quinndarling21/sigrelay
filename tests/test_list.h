@@ -36,6 +36,7 @@
     X(relay_rejects_invalid_routes)                \
     X(upstream_pool_rejects_invalid_config)        \
     X(upstream_adds_and_removes_members)           \
+    X(upstream_new_member_gets_full_credit)        \
     X(upstream_rejects_invalid_members)            \
     X(upstream_marks_member_down_after_failures)   \
     X(upstream_reports_probe_due)                  \

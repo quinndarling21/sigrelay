@@ -145,7 +145,7 @@ sigrelay_upstream_status sigrelay_upstream_member_add(sigrelay_upstream_pool *po
      * Join the current round with a full share. select() never picks a
      * member without credit, so a new member must not start at zero.
      */
-    member->credit = weight > 0 ? weight : 1;
+    member->credit = weight;
     member->state = SIGRELAY_UPSTREAM_HEALTHY;
     pool->count++;
     return SIGRELAY_UPSTREAM_OK;
