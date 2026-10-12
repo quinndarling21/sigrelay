@@ -184,7 +184,6 @@ sigrelay_upstream_status sigrelay_upstream_mark_probe(sigrelay_upstream_pool *po
                                                       const char *name, size_t name_len,
                                                       int success, uint64_t now_ms)
 {
-    const uint32_t max_failures = pool->max_failures;
     sigrelay_upstream_member *member;
     size_t idx;
 
@@ -206,7 +205,7 @@ sigrelay_upstream_status sigrelay_upstream_mark_probe(sigrelay_upstream_pool *po
     if (member->consecutive_failures < UINT32_MAX) {
         member->consecutive_failures++;
     }
-    if (member->consecutive_failures >= max_failures) {
+    if (member->consecutive_failures >= pool->max_failures) {
         member->state = SIGRELAY_UPSTREAM_UNHEALTHY;
         member->credit = 0;
     }
