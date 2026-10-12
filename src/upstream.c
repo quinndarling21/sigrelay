@@ -64,7 +64,7 @@ static int selectable(const sigrelay_upstream_member *member)
  */
 static size_t next_selectable(const sigrelay_upstream_pool *pool)
 {
-    for (size_t i = pool->cursor; i < pool->count - 1; i++) {
+    for (size_t i = pool->cursor; i < pool->count; i++) {
         if (selectable(&pool->members[i])) {
             return i;
         }

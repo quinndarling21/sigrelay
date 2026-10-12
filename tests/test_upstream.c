@@ -291,6 +291,29 @@ void test_upstream_selects_all_healthy_members(void)
     TEST_ASSERT(seen[2] > 0);
 }
 
+void test_upstream_select_reaches_last_member(void)
+{
+    sigrelay_str hop;
+
+    /* In a pool of one, the only member is also the last. */
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_pool_init(&pool, 1000, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF1, 2));
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_select(&pool, &hop));
+        TEST_ASSERT_STR(SCSCF1, hop);
+    }
+
+    /* Only the last member is healthy: it must take all traffic. */
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF2, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF3, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, probe(SCSCF1, 0, 1000));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, probe(SCSCF2, 0, 1000));
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_select(&pool, &hop));
+        TEST_ASSERT_STR(SCSCF3, hop);
+    }
+}
+
 void test_upstream_select_weights_healthy_members(void)
 {
     size_t seen[3] = {0, 0, 0};
