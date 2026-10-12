@@ -1,10 +1,6 @@
-#define _POSIX_C_SOURCE 200809L
-
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "sigrelay/upstream.h"
 #include "test_harness.h"
@@ -66,22 +62,6 @@ static sigrelay_upstream_status lookup(const char *domain, uint64_t now_ms, sigr
 static sigrelay_upstream_status invalidate(const char *domain)
 {
     return sigrelay_upstream_cache_invalidate(&cache, domain, strlen(domain));
-}
-
-static uint64_t monotonic_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
-}
-
-static void sleep_us(long us)
-{
-    struct timespec ts = {us / 1000000, (us % 1000000) * 1000};
-
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
-    }
 }
 
 void test_upstream_pool_rejects_invalid_config(void)
@@ -424,13 +404,14 @@ void test_upstream_cache_rejects_invalid_input(void)
 
 void test_upstream_cache_hit_within_ttl(void)
 {
+    uint64_t now_ms = 1000;
     sigrelay_str hop;
 
     TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_cache_init(&cache, SHORT_TTL_MS));
-    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, store("ims.example.net", SCSCF1, monotonic_ms()));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, store("ims.example.net", SCSCF1, now_ms));
 
     /* Look the entry up just before it expires. */
-    sleep_us(SHORT_TTL_MS * 1000 - 400);
-    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, lookup("ims.example.net", monotonic_ms(), &hop));
+    now_ms += SHORT_TTL_MS - 1;
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, lookup("ims.example.net", now_ms, &hop));
     TEST_ASSERT_STR(SCSCF1, hop);
 }
