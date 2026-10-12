@@ -76,7 +76,15 @@ void test_relay_rejects_invalid_routes(void)
                    sigrelay_route_add(&table, NULL, 0, "dra1.example.net", 16));
     TEST_ASSERT_EQ(0, table.count);
 
+    /* 63 '.' 63 '.' 63 '.' 61 == 253, the longest presentation-form DNS name.
+     * A single run of 253 letters is one oversized label, so it is not the
+     * length-ceiling fixture. */
+    _Static_assert(63 + 1 + 63 + 1 + 63 + 1 + 61 == SIGRELAY_ROUTE_NAME_MAX,
+                   "SIGRELAY_ROUTE_NAME_MAX must match four DNS labels");
     memset(name, 'a', sizeof(name));
+    name[63] = '.';
+    name[127] = '.';
+    name[191] = '.';
     TEST_ASSERT_EQ(SIGRELAY_RELAY_OK,
                    sigrelay_route_add(&table, name, SIGRELAY_ROUTE_NAME_MAX, "hop", 3));
     TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME,
@@ -96,4 +104,62 @@ void test_relay_rejects_invalid_routes(void)
         TEST_ASSERT_EQ(SIGRELAY_RELAY_OK, add(realm, "dra1.example.net"));
     }
     TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_TABLE_FULL, add("full.example.org", "dra1.example.net"));
+}
+
+void test_relay_rejects_malformed_names(void)
+{
+    char label[64 + 12];
+    char solid[SIGRELAY_ROUTE_NAME_MAX];
+    const char suffix[] = ".example.net";
+    const size_t suffix_len = sizeof(suffix) - 1;
+    sigrelay_str hop;
+
+    sigrelay_route_table_init(&table);
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_OK, add("example.net", "dra1.example.net:3868"));
+
+    /* Empty labels, a leading dot, and a label that starts or ends with '-'. */
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("ims..example.net", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("ims..example.net", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup(".example.net", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add(".example.net", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("-ims.example.net", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("-ims.example.net", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("ims-.example.net", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("ims-.example.net", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("..", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("..", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup(".", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add(".", "hop"));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("-.-", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("-.-", "hop"));
+    /* A second trailing dot is an empty label, not a second root marker. */
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, lookup("example.net..", &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME, add("example.net..", "hop"));
+
+    /* A label longer than 63 octets is not a DNS label (RFC 1035 section 2.3.1). */
+    memset(label, 'a', 64);
+    memcpy(label + 64, suffix, suffix_len);
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME,
+                   sigrelay_route_lookup(&table, label, 64 + suffix_len, &hop));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME,
+                   sigrelay_route_add(&table, label, 64 + suffix_len, "hop", 3));
+
+    /* 253 letters is within the name limit and over the 63-octet label limit. */
+    memset(solid, 'a', sizeof(solid));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME,
+                   sigrelay_route_add(&table, solid, sizeof(solid), "hop", 3));
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_ERR_INVALID_NAME,
+                   sigrelay_route_lookup(&table, solid, sizeof(solid), &hop));
+
+    /* 63 is still a legal label, and a leading digit is legal (RFC 1123 section 2.1). */
+    memset(label, 'b', 63);
+    memcpy(label + 63, suffix, suffix_len);
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_OK, sigrelay_route_lookup(&table, label, 63 + suffix_len, &hop));
+    TEST_ASSERT_STR("dra1.example.net:3868", hop);
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_OK, lookup("1ims.example.net", &hop));
+    TEST_ASSERT_STR("dra1.example.net:3868", hop);
+    TEST_ASSERT_EQ(SIGRELAY_RELAY_OK, lookup("ims-core.example.net", &hop));
+    TEST_ASSERT_STR("dra1.example.net:3868", hop);
+
+    TEST_ASSERT_EQ(1, table.count);
 }
