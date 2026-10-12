@@ -4,6 +4,7 @@ add_executable(sigrelay_tests
   test_sip_body.c
   test_diameter.c
   test_relay.c
+  test_upstream.c
 )
 # sigrelay_zlib is linked directly because the body tests compress their input
 # with zlib's deflate API.
