@@ -33,6 +33,7 @@
     X(diameter_rejects_truncated_input)     \
     X(relay_routes_exact_match)             \
     X(relay_routes_parent_domain)           \
-    X(relay_rejects_invalid_routes)
+    X(relay_rejects_invalid_routes)         \
+    X(relay_rejects_malformed_names)
 
 #endif /* SIGRELAY_TEST_LIST_H */

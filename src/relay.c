@@ -13,8 +13,24 @@ static int is_name_char(unsigned char c)
            c == '-' || c == '.';
 }
 
+/* RFC 1035 section 2.3.1. RFC 1123 section 2.1 allows the label to start with a digit. */
+static int valid_label(const char *label, size_t len)
+{
+    unsigned char first;
+    unsigned char last;
+
+    if (len == 0 || len > SIGRELAY_ROUTE_LABEL_MAX) {
+        return 0;
+    }
+    first = (unsigned char)label[0];
+    last = (unsigned char)label[len - 1];
+    return first != '-' && last != '-';
+}
+
 static int valid_name(const char *name, size_t len)
 {
+    size_t begin = 0;
+
     if (len == 0 || len > SIGRELAY_ROUTE_NAME_MAX) {
         return 0;
     }
@@ -23,7 +39,26 @@ static int valid_name(const char *name, size_t len)
             return 0;
         }
     }
-    return 1;
+
+    /* One trailing dot is the DNS root in presentation form ("example.net."),
+     * not an empty label. Lookup of that spelling stays NOT_FOUND because
+     * stored routes have no trailing dot. A bare "." has no label. */
+    if ((unsigned char)name[len - 1] == '.') {
+        len--;
+        if (len == 0) {
+            return 0;
+        }
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (name[i] == '.') {
+            if (!valid_label(name + begin, i - begin)) {
+                return 0;
+            }
+            begin = i + 1;
+        }
+    }
+    return valid_label(name + begin, len - begin);
 }
 
 static int valid_next_hop(const char *hop, size_t len)
