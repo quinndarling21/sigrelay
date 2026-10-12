@@ -210,6 +210,14 @@ void test_upstream_marks_member_down_after_failures(void)
                    sigrelay_upstream_mark_probe(&pool, NULL, 0, 1, 11000));
 }
 
+void test_upstream_mark_probe_rejects_null_pool(void)
+{
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_ERR_INVALID_ARG,
+                   sigrelay_upstream_mark_probe(NULL, SCSCF1, strlen(SCSCF1), 1, 1000));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_ERR_INVALID_ARG,
+                   sigrelay_upstream_mark_probe(NULL, SCSCF1, strlen(SCSCF1), 0, 1000));
+}
+
 void test_upstream_reports_probe_due(void)
 {
     int due = -1;
