@@ -34,4 +34,11 @@ When an upgrade is prepared without the release tarball, the pull request update
 
 ## Pending upgrades
 
-None.
+### zlib 1.3.2 (upgrade pending)
+
+`zlib/VERSION` names zlib 1.3.2 and its published SHA-256, but the files in `zlib/` are still the unmodified 1.3.1 release; the 1.3.2 tarball could not be downloaded where the upgrade was prepared. A maintainer drops in the verified release tarball contents before the pull request merges:
+
+1. Download `zlib-1.3.2.tar.gz` from https://zlib.net/ and check its SHA-256 against the one in `zlib/VERSION`, which is the value zlib.net publishes for the release.
+2. Replace the files listed in `zlib/VERSION` with the ones from the tarball, unmodified. 1.3.2 has the same set of files, and `zlib/CMakeLists.txt` needs no change.
+3. Delete the `upgrade pending` line from `zlib/VERSION`, set the zlib version in the table above and in the top-level `README.md` to 1.3.2, and replace this entry with "None."
+4. Follow steps 4 and 5 of "Upgrading a library".
