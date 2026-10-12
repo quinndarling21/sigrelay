@@ -232,6 +232,11 @@ sigrelay_upstream_status sigrelay_upstream_probe_due(const sigrelay_upstream_poo
     member = &pool->members[idx];
     factor = member->state == SIGRELAY_UPSTREAM_UNHEALTHY ? SIGRELAY_UPSTREAM_DOWN_PROBE_FACTOR : 1u;
     *due = now_ms < member->last_probe_ms ||
+           /* False positive (CI triage run 38187716821): sigrelay_upstream_pool_init caps
+            * probe_interval_ms at SIGRELAY_UPSTREAM_PROBE_INTERVAL_MAX_MS (600000) and factor is
+            * 1 or SIGRELAY_UPSTREAM_DOWN_PROBE_FACTOR (4), so the uint32_t product is at most
+            * 2400000 and cannot wrap before the widening comparison. */
+           // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result)
            now_ms - member->last_probe_ms >= pool->probe_interval_ms * factor;
     return SIGRELAY_UPSTREAM_OK;
 }
