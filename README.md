@@ -11,9 +11,25 @@ cmake --build build
 ctest --test-dir build -LE quarantine --output-on-failure
 ```
 
-Each test case is its own ctest test (listed in `tests/test_list.h`); tests in `tests/quarantine.cmake` are excluded by `-LE quarantine`.
+Each test case is its own ctest test, named after its `X(...)` entry in `tests/test_list.h`; `hook_policies` and `report_tools` run the Python tooling tests, and `ctest --test-dir build -N` lists every name. Run one test with an anchored regex so `-R` matches only that name: `ctest --test-dir build -R '^sip_parses_invite$' --output-on-failure`. Tests in `tests/quarantine.cmake` are excluded by `-LE quarantine`.
 
-Static analysis runs in CI with cppcheck and clang-tidy (configured in `.clang-tidy`); see `.github/workflows/ci.yml` for the exact commands.
+To reproduce CI (`.github/workflows/ci.yml`) before pushing, run the commands below. CI builds with clang and with gcc, both with warnings as errors (`-DCMAKE_COMPILE_WARNING_AS_ERROR=ON`, which needs CMake 3.24+; older versions ignore it), and runs the tests from the gcc build. clang-tidy takes its checks from `.clang-tidy` and treats every finding as an error. CI also converts the cppcheck and clang-tidy output to SARIF reports; locally the findings print to the terminal.
+
+```sh
+# build-and-test job
+cmake -S . -B build-clang -DCMAKE_C_COMPILER=clang -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+cmake --build build-clang --parallel
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+cmake --build build --parallel
+ctest --test-dir build -LE quarantine --output-on-failure
+
+# cppcheck and clang-tidy jobs
+cppcheck --std=c11 --language=c -I include --library=zlib \
+  --enable=warning,style,performance,portability --check-level=exhaustive \
+  --inline-suppr --error-exitcode=1 src include
+cmake -S . -B build-tidy -DCMAKE_C_COMPILER=clang -DSIGRELAY_BUILD_TESTS=OFF
+clang-tidy -p build-tidy --quiet src/*.c
+```
 
 ## Upstream pools and the route cache
 
