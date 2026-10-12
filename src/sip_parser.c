@@ -260,14 +260,12 @@ static sigrelay_sip_status set_once(unsigned *seen, unsigned bit, sigrelay_str v
     return SIGRELAY_SIP_OK;
 }
 
-static sigrelay_sip_status parse_header_line(const char *line, size_t n, sigrelay_sip_message *m,
-                                             unsigned *seen)
+static sigrelay_sip_status split_header(const char *line, size_t n, sigrelay_str *name,
+                                        sigrelay_str *value)
 {
     size_t name_len = 0;
     size_t pos;
     size_t value_end;
-    sigrelay_str name;
-    sigrelay_str value;
 
     while (name_len < n && is_token_char((unsigned char)line[name_len])) {
         name_len++;
@@ -296,58 +294,138 @@ static sigrelay_sip_status parse_header_line(const char *line, size_t n, sigrela
     while (value_end > pos && is_wsp((unsigned char)line[value_end - 1])) {
         value_end--;
     }
-    name = make_str(line, name_len);
-    value = make_str(line + pos, value_end - pos);
+    *name = make_str(line, name_len);
+    *value = make_str(line + pos, value_end - pos);
+    return SIGRELAY_SIP_OK;
+}
 
-    if (str_ieq(name.ptr, name.len, "Via") || str_ieq(name.ptr, name.len, "v")) {
-        if (value.len == 0) {
-            return SIGRELAY_SIP_ERR_HEADER;
-        }
-        if (!(*seen & SEEN_VIA)) {
-            *seen |= SEEN_VIA;
-            m->via = value;
-        }
-        return SIGRELAY_SIP_OK;
+/*
+ * A later Via is valid SIP; only the topmost value is stored. An empty value
+ * is rejected on every row, including one that follows a valid Via.
+ */
+static sigrelay_sip_status apply_via(sigrelay_str value, sigrelay_sip_message *m, unsigned *seen)
+{
+    if (value.len == 0) {
+        return SIGRELAY_SIP_ERR_HEADER;
     }
-    if (str_ieq(name.ptr, name.len, "From") || str_ieq(name.ptr, name.len, "f")) {
-        return set_once(seen, SEEN_FROM, value, &m->from);
-    }
-    if (str_ieq(name.ptr, name.len, "To") || str_ieq(name.ptr, name.len, "t")) {
-        return set_once(seen, SEEN_TO, value, &m->to);
-    }
-    if (str_ieq(name.ptr, name.len, "Call-ID") || str_ieq(name.ptr, name.len, "i")) {
-        return set_once(seen, SEEN_CALL_ID, value, &m->call_id);
-    }
-    if (str_ieq(name.ptr, name.len, "CSeq")) {
-        if (*seen & SEEN_CSEQ) {
-            return SIGRELAY_SIP_ERR_DUPLICATE_HEADER;
-        }
-        *seen |= SEEN_CSEQ;
-        return parse_cseq(value, m);
-    }
-    if (str_ieq(name.ptr, name.len, "Content-Length") || str_ieq(name.ptr, name.len, "l")) {
-        uint64_t length;
-
-        if (*seen & SEEN_CONTENT_LENGTH) {
-            return SIGRELAY_SIP_ERR_DUPLICATE_HEADER;
-        }
-        *seen |= SEEN_CONTENT_LENGTH;
-        if (!parse_decimal(value.ptr, value.len, SIZE_MAX, &length)) {
-            return SIGRELAY_SIP_ERR_CONTENT_LENGTH;
-        }
-        m->has_content_length = 1;
-        m->content_length = (size_t)length;
-        return SIGRELAY_SIP_OK;
-    }
-    /*
-     * A second Content-Encoding row would add a coding to the list; it is
-     * rejected rather than kept or dropped so the body is never decoded with
-     * only part of its codings.
-     */
-    if (str_ieq(name.ptr, name.len, "Content-Encoding") || str_ieq(name.ptr, name.len, "e")) {
-        return set_once(seen, SEEN_CONTENT_ENCODING, value, &m->content_encoding);
+    if (!(*seen & SEEN_VIA)) {
+        *seen |= SEEN_VIA;
+        m->via = value;
     }
     return SIGRELAY_SIP_OK;
+}
+
+static sigrelay_sip_status apply_cseq(sigrelay_str value, sigrelay_sip_message *m, unsigned *seen)
+{
+    if (*seen & SEEN_CSEQ) {
+        return SIGRELAY_SIP_ERR_DUPLICATE_HEADER;
+    }
+    *seen |= SEEN_CSEQ;
+    return parse_cseq(value, m);
+}
+
+static sigrelay_sip_status apply_content_length(sigrelay_str value, sigrelay_sip_message *m,
+                                                unsigned *seen)
+{
+    uint64_t length;
+
+    if (*seen & SEEN_CONTENT_LENGTH) {
+        return SIGRELAY_SIP_ERR_DUPLICATE_HEADER;
+    }
+    *seen |= SEEN_CONTENT_LENGTH;
+    if (!parse_decimal(value.ptr, value.len, SIZE_MAX, &length)) {
+        return SIGRELAY_SIP_ERR_CONTENT_LENGTH;
+    }
+    m->has_content_length = 1;
+    m->content_length = (size_t)length;
+    return SIGRELAY_SIP_OK;
+}
+
+enum header_id {
+    HEADER_VIA,
+    HEADER_FROM,
+    HEADER_TO,
+    HEADER_CALL_ID,
+    HEADER_CSEQ,
+    HEADER_CONTENT_LENGTH,
+    HEADER_CONTENT_ENCODING
+};
+
+/* Long and compact names share an id, so "l" and "Content-Length" are one header. */
+static const struct {
+    const char *name;
+    enum header_id id;
+} known_headers[] = {
+    {"via", HEADER_VIA},
+    {"v", HEADER_VIA},
+    {"from", HEADER_FROM},
+    {"f", HEADER_FROM},
+    {"to", HEADER_TO},
+    {"t", HEADER_TO},
+    {"call-id", HEADER_CALL_ID},
+    {"i", HEADER_CALL_ID},
+    {"cseq", HEADER_CSEQ},
+    {"content-length", HEADER_CONTENT_LENGTH},
+    {"l", HEADER_CONTENT_LENGTH},
+    {"content-encoding", HEADER_CONTENT_ENCODING},
+    {"e", HEADER_CONTENT_ENCODING},
+};
+
+static int find_header(sigrelay_str name, enum header_id *id)
+{
+    for (size_t i = 0; i < sizeof(known_headers) / sizeof(known_headers[0]); i++) {
+        if (str_ieq(name.ptr, name.len, known_headers[i].name)) {
+            *id = known_headers[i].id;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static sigrelay_sip_status dispatch_header(enum header_id id, sigrelay_str value,
+                                           sigrelay_sip_message *m, unsigned *seen)
+{
+    switch (id) {
+    case HEADER_VIA:
+        return apply_via(value, m, seen);
+    case HEADER_FROM:
+        return set_once(seen, SEEN_FROM, value, &m->from);
+    case HEADER_TO:
+        return set_once(seen, SEEN_TO, value, &m->to);
+    case HEADER_CALL_ID:
+        return set_once(seen, SEEN_CALL_ID, value, &m->call_id);
+    case HEADER_CSEQ:
+        return apply_cseq(value, m, seen);
+    case HEADER_CONTENT_LENGTH:
+        return apply_content_length(value, m, seen);
+    case HEADER_CONTENT_ENCODING:
+        /*
+         * A second Content-Encoding row would add a coding to the list; it is
+         * rejected rather than kept or dropped so the body is never decoded with
+         * only part of its codings.
+         */
+        return set_once(seen, SEEN_CONTENT_ENCODING, value, &m->content_encoding);
+    default:
+        /* An id with no case would silently ignore a header the table recognized. */
+        return SIGRELAY_SIP_ERR_HEADER;
+    }
+}
+
+static sigrelay_sip_status parse_header_line(const char *line, size_t n, sigrelay_sip_message *m,
+                                             unsigned *seen)
+{
+    sigrelay_str name;
+    sigrelay_str value;
+    enum header_id id;
+    sigrelay_sip_status status = split_header(line, n, &name, &value);
+
+    if (status != SIGRELAY_SIP_OK) {
+        return status;
+    }
+    if (!find_header(name, &id)) {
+        return SIGRELAY_SIP_OK;
+    }
+    return dispatch_header(id, value, m, seen);
 }
 
 sigrelay_sip_status sigrelay_sip_parse(const char *buf, size_t len, sigrelay_sip_message *msg)
