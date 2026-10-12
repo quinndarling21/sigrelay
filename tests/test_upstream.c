@@ -1,10 +1,6 @@
-#define _POSIX_C_SOURCE 200809L
-
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "sigrelay/upstream.h"
 #include "test_harness.h"
@@ -68,22 +64,6 @@ static sigrelay_upstream_status invalidate(const char *domain)
     return sigrelay_upstream_cache_invalidate(&cache, domain, strlen(domain));
 }
 
-static uint64_t monotonic_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
-}
-
-static void sleep_us(long us)
-{
-    struct timespec ts = {us / 1000000, (us % 1000000) * 1000};
-
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
-    }
-}
-
 void test_upstream_pool_rejects_invalid_config(void)
 {
     TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_ERR_INVALID_ARG, sigrelay_upstream_pool_init(NULL, 1000, 3));
@@ -138,6 +118,21 @@ void test_upstream_adds_and_removes_members(void)
     TEST_ASSERT_EQ(1, pool.count);
     TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF2, 5));
     TEST_ASSERT_EQ(2, pool.count);
+}
+
+void test_upstream_new_member_gets_full_credit(void)
+{
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_pool_init(&pool, 1000, 3));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF1, SIGRELAY_UPSTREAM_WEIGHT_MIN));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF2, SIGRELAY_UPSTREAM_WEIGHT_MAX));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_WEIGHT_MIN, pool.members[0].credit);
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_WEIGHT_MAX, pool.members[1].credit);
+
+    /* A member added mid-round joins with its full weight, not what is left of the round. */
+    TEST_ASSERT_EQ(0, select_index());
+    TEST_ASSERT_EQ(0, pool.members[0].credit);
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF3, 7));
+    TEST_ASSERT_EQ(7, pool.members[2].credit);
 }
 
 void test_upstream_rejects_invalid_members(void)
@@ -210,6 +205,14 @@ void test_upstream_marks_member_down_after_failures(void)
                    sigrelay_upstream_mark_probe(&pool, NULL, 0, 1, 11000));
 }
 
+void test_upstream_mark_probe_rejects_null_pool(void)
+{
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_ERR_INVALID_ARG,
+                   sigrelay_upstream_mark_probe(NULL, SCSCF1, strlen(SCSCF1), 1, 1000));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_ERR_INVALID_ARG,
+                   sigrelay_upstream_mark_probe(NULL, SCSCF1, strlen(SCSCF1), 0, 1000));
+}
+
 void test_upstream_reports_probe_due(void)
 {
     int due = -1;
@@ -266,6 +269,29 @@ void test_upstream_selects_all_healthy_members(void)
     TEST_ASSERT(seen[0] > 0);
     TEST_ASSERT(seen[1] > 0);
     TEST_ASSERT(seen[2] > 0);
+}
+
+void test_upstream_select_reaches_last_member(void)
+{
+    sigrelay_str hop;
+
+    /* In a pool of one, the only member is also the last. */
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_pool_init(&pool, 1000, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF1, 2));
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_select(&pool, &hop));
+        TEST_ASSERT_STR(SCSCF1, hop);
+    }
+
+    /* Only the last member is healthy: it must take all traffic. */
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF2, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, add(SCSCF3, 1));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, probe(SCSCF1, 0, 1000));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, probe(SCSCF2, 0, 1000));
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_select(&pool, &hop));
+        TEST_ASSERT_STR(SCSCF3, hop);
+    }
 }
 
 void test_upstream_select_weights_healthy_members(void)
@@ -424,13 +450,14 @@ void test_upstream_cache_rejects_invalid_input(void)
 
 void test_upstream_cache_hit_within_ttl(void)
 {
+    uint64_t now_ms = 1000;
     sigrelay_str hop;
 
     TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, sigrelay_upstream_cache_init(&cache, SHORT_TTL_MS));
-    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, store("ims.example.net", SCSCF1, monotonic_ms()));
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, store("ims.example.net", SCSCF1, now_ms));
 
     /* Look the entry up just before it expires. */
-    sleep_us(SHORT_TTL_MS * 1000 - 400);
-    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, lookup("ims.example.net", monotonic_ms(), &hop));
+    now_ms += SHORT_TTL_MS - 1;
+    TEST_ASSERT_EQ(SIGRELAY_UPSTREAM_OK, lookup("ims.example.net", now_ms, &hop));
     TEST_ASSERT_STR(SCSCF1, hop);
 }

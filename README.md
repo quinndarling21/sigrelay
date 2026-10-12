@@ -43,7 +43,7 @@ clang-tidy -p build-tidy --quiet src/*.c
 
 `sigrelay_upstream_member_remove` shifts later members down, so a next hop returned by an earlier `select` may then point at a different member. Copy it first if you need it.
 
-`sigrelay_upstream_select(pool, &next_hop)` returns healthy members in weighted round-robin order. Each round a member is picked up to its weight times, interleaved with the others. A new round starts when no healthy member has picks left. `next_hop` points into the pool. The call returns `SIGRELAY_UPSTREAM_ERR_NONE_HEALTHY` when the pool is empty or every member is down. **Known issue:** the selection scan in `src/upstream.c` never reaches the last slot of the pool (the most recently added member), so that member is never returned and a single-member pool always returns `SIGRELAY_UPSTREAM_ERR_NONE_HEALTHY`.
+`sigrelay_upstream_select(pool, &next_hop)` returns healthy members in weighted round-robin order. Each round a member is picked up to its weight times, interleaved with the others. A new round starts when no healthy member has picks left. `next_hop` points into the pool. The call returns `SIGRELAY_UPSTREAM_ERR_NONE_HEALTHY` when the pool is empty or every member is down.
 
 ### Health checks
 
@@ -70,7 +70,7 @@ The library does not send probes. The caller probes each member (an OPTIONS ping
 | Status | Returned by | Meaning for the caller |
 |---|---|---|
 | `SIGRELAY_UPSTREAM_OK` | all | Success. |
-| `SIGRELAY_UPSTREAM_ERR_INVALID_ARG` | all | A required pointer is NULL, or an init parameter is out of range. This is a caller bug and nothing changed. `mark_probe` reads the pool before its NULL check, so a NULL pool crashes there instead. |
+| `SIGRELAY_UPSTREAM_ERR_INVALID_ARG` | all | A required pointer is NULL, or an init parameter is out of range. This is a caller bug and nothing changed. |
 | `SIGRELAY_UPSTREAM_ERR_INVALID_NAME` | `member_add`, `cache_lookup`, `cache_store`, `cache_invalidate` | The member name, next hop or domain failed the length or character checks. The input was rejected and nothing changed. |
 | `SIGRELAY_UPSTREAM_ERR_INVALID_WEIGHT` | `member_add` | Weight is 0 or above 100. |
 | `SIGRELAY_UPSTREAM_ERR_DUPLICATE` | `member_add` | A member with that exact name already exists. It keeps its weight and health state. |

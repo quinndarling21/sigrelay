@@ -36,10 +36,13 @@
     X(relay_rejects_invalid_routes)                \
     X(upstream_pool_rejects_invalid_config)        \
     X(upstream_adds_and_removes_members)           \
+    X(upstream_new_member_gets_full_credit)        \
     X(upstream_rejects_invalid_members)            \
     X(upstream_marks_member_down_after_failures)   \
+    X(upstream_mark_probe_rejects_null_pool)       \
     X(upstream_reports_probe_due)                  \
     X(upstream_selects_all_healthy_members)        \
+    X(upstream_select_reaches_last_member)         \
     X(upstream_select_weights_healthy_members)     \
     X(upstream_select_reports_none_healthy)        \
     X(upstream_cache_stores_and_expires)           \
