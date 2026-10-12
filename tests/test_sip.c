@@ -227,6 +227,35 @@ void test_sip_rejects_malformed_headers(void)
          SIGRELAY_SIP_ERR_CONTENT_LENGTH},
         {VIA TO FROM CALL_ID CSEQ "l: 0\r\nContent-Length: 0\r\n\r\n",
          SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        /* An empty Via is malformed on every row, including one after a valid Via. */
+        {"Via:   \r\n" TO FROM CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {"v:\r\n" TO FROM CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM CALL_ID CSEQ "Via:   \r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM CALL_ID CSEQ "v:\r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM CALL_ID CSEQ "Via: bad\x01value\r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO TO FROM CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO "t: <sip:bob@ims.example.net>\r\n" FROM CALL_ID CSEQ "\r\n",
+         SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA "To:   \r\n" FROM CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM CALL_ID "i: other@host\r\n" CSEQ "\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO FROM CALL_ID "i:   \r\n" CSEQ "\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO FROM "f:\r\n" CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO "From:\r\n" CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO "From:\t\r\n" CALL_ID CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        /* A second singleton is a duplicate even when its value would also be illegal. */
+        {VIA TO FROM CALL_ID CSEQ "CSeq: not-a-cseq\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO FROM CALL_ID "CSeq:\r\n\r\n", SIGRELAY_SIP_ERR_CSEQ},
+        {VIA TO FROM CALL_ID "CSeq:   \r\n\r\n", SIGRELAY_SIP_ERR_CSEQ},
+        {VIA TO FROM CALL_ID "CSeq:\t\r\n\r\n", SIGRELAY_SIP_ERR_CSEQ},
+        {VIA TO FROM CALL_ID CSEQ "Content-Length:\r\n\r\n", SIGRELAY_SIP_ERR_CONTENT_LENGTH},
+        {VIA TO FROM CALL_ID CSEQ "l:\r\n\r\n", SIGRELAY_SIP_ERR_CONTENT_LENGTH},
+        {VIA TO FROM CALL_ID CSEQ "Content-Length: 0\r\nContent-Length: nope\r\n\r\n",
+         SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {VIA TO FROM CALL_ID "Subject: del\x7f\r\n" CSEQ "\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM CALL_ID CSEQ "X-Custom: bad\x01\r\n\r\n", SIGRELAY_SIP_ERR_HEADER},
+        {"Call ID: a84b4c76e66710@pcscf.example.org\r\n" VIA TO FROM CSEQ "\r\n",
+         SIGRELAY_SIP_ERR_HEADER},
+        {VIA TO FROM "ii: not-a-call-id\r\n" CSEQ "\r\n", SIGRELAY_SIP_ERR_MISSING_HEADER},
     };
 #undef VIA
 #undef TO
@@ -291,6 +320,7 @@ void test_sip_rejects_malformed_content_encoding(void)
         {BASE "Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n\r\n",
          SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
         {BASE "Content-Encoding: gzip\r\ne: deflate\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
+        {BASE "Content-Encoding: gzip\r\ne:\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
         {BASE "e: gzip\r\nCONTENT-ENCODING: identity\r\n\r\n", SIGRELAY_SIP_ERR_DUPLICATE_HEADER},
     };
     static const char padded[] = INVITE_LINE "\r\n" BASE "Content-Encoding: \t gzip \t\r\n\r\n";
@@ -302,4 +332,61 @@ void test_sip_rejects_malformed_content_encoding(void)
     /* The value is trimmed like every other header value. */
     TEST_ASSERT_EQ(SIGRELAY_SIP_OK, sigrelay_sip_parse(padded, sizeof(padded) - 1, &msg));
     TEST_ASSERT_STR("gzip", msg.content_encoding);
+}
+
+void test_sip_parses_header_forms(void)
+{
+    /*
+     * Names that only share a prefix are different headers. A comma-separated
+     * Via is one value; later Via rows are accepted and do not replace the first.
+     */
+    static const char forms[] =
+        "INVITE sip:bob@ims.example.net SIP/2.0\r\n"
+        "Via-Branch: not-a-via\r\n"
+        "a: not-a-via\r\n"
+        "V: SIP/2.0/UDP a.example;branch=z9hG4bKa, SIP/2.0/UDP b.example;branch=z9hG4bKb\r\n"
+        "Via: SIP/2.0/UDP c.example;branch=z9hG4bKc\r\n"
+        "v: SIP/2.0/UDP d.example;branch=z9hG4bKd\r\n"
+        "Call-ID-Extra: not-the-call-id\r\n"
+        "I: call\tone\r\n"
+        "T:<sip:bob@ims.example.net>;tag=caf\xC3\xA9\r\n"
+        "f \t: \t <sip:alice@example.org>;tag=1 \t\r\n"
+        "c: not-a-cseq\r\n"
+        "CSeq:\t000314159\tINVITE\r\n"
+        "X-Custom:\r\n"
+        "X-Custom: one\r\n"
+        "X-Foo.Bar_1: two\r\n"
+        "ll: 9\r\n"
+        "l: 000\r\n"
+        "e: gzip\r\n"
+        "\r\n";
+    static const char max_cseq[] =
+        "INVITE sip:bob@ims.example.net SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP pcscf.example.org\r\n"
+        "To: <sip:bob@ims.example.net>\r\n"
+        "From: <sip:alice@example.org>;tag=1\r\n"
+        "Call-ID: 1@pcscf.example.org\r\n"
+        "CSeq: 2147483647 INVITE\r\n"
+        "\r\n";
+    sigrelay_sip_message msg;
+
+    TEST_ASSERT_EQ(SIGRELAY_SIP_OK, sigrelay_sip_parse(forms, sizeof(forms) - 1, &msg));
+    TEST_ASSERT_EQ(SIGRELAY_SIP_REQUEST, msg.kind);
+    TEST_ASSERT_STR("INVITE", msg.method);
+    TEST_ASSERT_STR("SIP/2.0/UDP a.example;branch=z9hG4bKa, SIP/2.0/UDP b.example;branch=z9hG4bKb",
+                    msg.via);
+    TEST_ASSERT_STR("<sip:bob@ims.example.net>;tag=caf\xC3\xA9", msg.to);
+    TEST_ASSERT_STR("<sip:alice@example.org>;tag=1", msg.from);
+    TEST_ASSERT_STR("call\tone", msg.call_id);
+    TEST_ASSERT_EQ(314159, msg.cseq);
+    TEST_ASSERT_STR("INVITE", msg.cseq_method);
+    TEST_ASSERT(msg.has_content_length);
+    TEST_ASSERT_EQ(0, msg.content_length);
+    TEST_ASSERT_EQ(0, msg.body.len);
+    TEST_ASSERT_STR("gzip", msg.content_encoding);
+    TEST_ASSERT_EQ(sizeof(forms) - 1, msg.message_len);
+
+    TEST_ASSERT_EQ(SIGRELAY_SIP_OK, sigrelay_sip_parse(max_cseq, sizeof(max_cseq) - 1, &msg));
+    TEST_ASSERT_EQ(2147483647, msg.cseq);
+    TEST_ASSERT_STR("INVITE", msg.cseq_method);
 }

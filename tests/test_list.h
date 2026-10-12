@@ -10,6 +10,7 @@
     X(sip_parses_invite)                    \
     X(sip_parses_response)                  \
     X(sip_parses_compact_headers)           \
+    X(sip_parses_header_forms)              \
     X(sip_rejects_malformed_start_line)     \
     X(sip_rejects_malformed_headers)        \
     X(sip_rejects_truncated_input)          \
